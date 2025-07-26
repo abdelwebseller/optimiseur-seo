@@ -607,6 +607,23 @@ def main():
             help="Réécrire les ancres générées pour les rendre plus naturelles et engageantes"
         )
         
+        # Initialiser les variables avec des valeurs par défaut
+        anchor_rewrite_model = "gpt-4o-mini"
+        anchor_rewrite_temperature = 0.7
+        anchor_rewrite_prompt = """Réécris cette ancre de lien pour qu'elle soit plus naturelle et engageante, tout en conservant les mots-clés importants. 
+
+Règles à suivre :
+- Garde tous les mots-clés techniques et spécifiques
+- Ajoute des mots de liaison naturels
+- Rends le texte plus fluide et lisible
+- Évite les répétitions
+- Utilise un ton professionnel mais accessible
+- Longueur : 3-8 mots maximum
+
+Ancre originale : {anchor}
+
+Ancre réécrite :"""
+        
         if optimize_anchors:
             with st.expander("🔧 Configuration de réécriture"):
                 col1, col2 = st.columns(2)
@@ -630,23 +647,9 @@ def main():
                     )
                 
                 # Prompt personnalisé
-                default_prompt = """Réécris cette ancre de lien pour qu'elle soit plus naturelle et engageante, tout en conservant les mots-clés importants. 
-
-Règles à suivre :
-- Garde tous les mots-clés techniques et spécifiques
-- Ajoute des mots de liaison naturels
-- Rends le texte plus fluide et lisible
-- Évite les répétitions
-- Utilise un ton professionnel mais accessible
-- Longueur : 3-8 mots maximum
-
-Ancre originale : {anchor}
-
-Ancre réécrite :"""
-
                 anchor_rewrite_prompt = st.text_area(
                     "Prompt personnalisé",
-                    value=default_prompt,
+                    value=anchor_rewrite_prompt,
                     height=150,
                     help="Prompt personnalisé pour la réécriture des ancres. Utilisez {anchor} pour référencer l'ancre originale."
                 )
