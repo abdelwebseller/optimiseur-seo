@@ -1352,7 +1352,7 @@ class InternalLinkingOptimizer:
                 continue
                 
             for link_data in data['recommended_links']:
-                original_anchor = link_data.get('anchor', '')
+                original_anchor = link_data.get('anchor_text', '')
                 if not original_anchor:
                     continue
                 
@@ -1368,6 +1368,9 @@ class InternalLinkingOptimizer:
                         # Log de progression
                         if processed_anchors % 10 == 0:
                             self.logger.info(f"Ancres réécrites: {processed_anchors}/{total_anchors}")
+                        
+                        # Log détaillé pour debug
+                        self.logger.info(f"Ancre réécrite: '{original_anchor}' → '{rewritten_anchor}'")
                     
                 except Exception as e:
                     self.logger.warning(f"Erreur lors de la réécriture de l'ancre '{original_anchor}': {str(e)}")
