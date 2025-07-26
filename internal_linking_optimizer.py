@@ -290,23 +290,62 @@ class InternalLinkingOptimizer:
         urls = list(self.embeddings.keys())
         n = len(urls)
         
+        # Vérifier qu'on a des embeddings valides
+        if n == 0:
+            self.logger.warning("Aucun embedding disponible pour le calcul de similarité")
+            self.similarity_scores = {}
+            return
+        
+        if n == 1:
+            self.logger.warning("Seulement une page avec embedding, pas de similarité possible")
+            self.similarity_scores = {urls[0]: {}}
+            return
+        
         # Créer la matrice d'embeddings
         embeddings_matrix = []
-        for url in urls:
-            embeddings_matrix.append(self.embeddings[url])
+        valid_urls = []
         
+        for url in urls:
+            embedding = self.embeddings[url]
+            if embedding is not None and len(embedding) > 0:
+                embeddings_matrix.append(embedding)
+                valid_urls.append(url)
+        
+        # Vérifier qu'on a des embeddings valides
+        if len(embeddings_matrix) == 0:
+            self.logger.error("Aucun embedding valide trouvé")
+            self.similarity_scores = {}
+            return
+        
+        if len(embeddings_matrix) == 1:
+            self.logger.warning("Seulement un embedding valide, pas de similarité possible")
+            self.similarity_scores = {valid_urls[0]: {}}
+            return
+        
+        # Convertir en array numpy
         embeddings_matrix = np.array(embeddings_matrix)
         
-        # Calculer la similarité cosinus
-        similarity_matrix = cosine_similarity(embeddings_matrix)
+        # Vérifier la forme de la matrice
+        if embeddings_matrix.ndim == 1:
+            embeddings_matrix = embeddings_matrix.reshape(1, -1)
         
-        # Créer un dictionnaire pour accès facile
-        self.similarity_scores = {}
-        for i, url1 in enumerate(urls):
-            self.similarity_scores[url1] = {}
-            for j, url2 in enumerate(urls):
-                if i != j:  # Ignorer la similarité avec soi-même
-                    self.similarity_scores[url1][url2] = float(similarity_matrix[i][j])
+        # Calculer la similarité cosinus
+        try:
+            similarity_matrix = cosine_similarity(embeddings_matrix)
+            
+            # Créer un dictionnaire pour accès facile
+            self.similarity_scores = {}
+            for i, url1 in enumerate(valid_urls):
+                self.similarity_scores[url1] = {}
+                for j, url2 in enumerate(valid_urls):
+                    if i != j:  # Ignorer la similarité avec soi-même
+                        self.similarity_scores[url1][url2] = float(similarity_matrix[i][j])
+            
+            self.logger.info(f"Matrice de similarité calculée pour {len(valid_urls)} pages")
+            
+        except Exception as e:
+            self.logger.error(f"Erreur lors du calcul de similarité: {str(e)}")
+            self.similarity_scores = {}
 
     def generate_smart_anchor(self, source_url: str, target_url: str, target_data: dict) -> str:
         """Génère une ancre intelligente universelle basée sur le contenu et le contexte."""
@@ -437,6 +476,11 @@ class InternalLinkingOptimizer:
     def find_relevant_links(self, min_similarity: float = 0.5, max_links: int = 5):
         """Trouve les liens pertinents avec un algorithme amélioré."""
         self.logger.info(f"Recherche de liens pertinents (seuil: {min_similarity})...")
+        
+        # Vérifier qu'on a des données de similarité
+        if not self.similarity_scores:
+            self.logger.warning("Aucune donnée de similarité disponible")
+            return {}
         
         recommendations = {}
         
