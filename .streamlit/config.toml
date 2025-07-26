@@ -1,0 +1,21 @@
+[global]
+developmentMode = false
+
+[server]
+headless = true
+port = 8501
+enableCORS = true
+enableXsrfProtection = false
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+primaryColor = "#3498db"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f0f2f6"
+textColor = "#262730"
+font = "sans serif"
+
+[client]
+showErrorDetails = false 
