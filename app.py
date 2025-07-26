@@ -147,6 +147,36 @@ class WebSEOOptimizer:
             st.session_state.progress = int((current / total) * 100)
         st.session_state.current_step = step
     
+    def diagnose_errors(self):
+        """Diagnostique les erreurs courantes."""
+        errors = []
+        
+        # Vérifier la clé API
+        if not st.session_state.api_key:
+            errors.append("❌ Clé API OpenAI manquante")
+        elif not st.session_state.api_key.startswith("sk-"):
+            errors.append("❌ Format de clé API invalide")
+        
+        # Vérifier la connexion internet
+        try:
+            import requests
+            response = requests.get("https://api.openai.com", timeout=5)
+            if response.status_code != 200:
+                errors.append("⚠️ Problème de connexion à OpenAI")
+        except:
+            errors.append("❌ Pas de connexion internet")
+        
+        # Vérifier les ressources système
+        try:
+            import psutil
+            memory = psutil.virtual_memory()
+            if memory.percent > 90:
+                errors.append("⚠️ Mémoire système faible")
+        except:
+            pass
+        
+        return errors
+    
     def run_analysis(self, sitemap_url, min_similarity, max_links, embedding_model, use_reduced_dimensions, embedding_dimensions):
         """Lance l'analyse en arrière-plan."""
         try:
@@ -167,12 +197,22 @@ class WebSEOOptimizer:
             # Extraire les URLs du sitemap
             self.log_message(f"📋 Extraction des URLs depuis: {sitemap_url}")
             self.update_progress(5, 100, "Extraction des URLs...")
-            urls = self.optimizer.extract_urls_from_sitemap(sitemap_url)
-            self.log_message(f"✅ {len(urls)} URLs trouvées dans le sitemap")
+            
+            try:
+                urls = self.optimizer.extract_urls_from_sitemap(sitemap_url)
+                self.log_message(f"✅ {len(urls)} URLs trouvées dans le sitemap")
+            except Exception as e:
+                self.log_message(f"❌ Erreur lors de l'extraction du sitemap: {str(e)}", "ERROR")
+                return False
             
             if len(urls) == 0:
                 self.log_message("❌ Aucune URL trouvée dans le sitemap", "ERROR")
                 return False
+            
+            # Limiter le nombre d'URLs pour éviter les timeouts
+            if len(urls) > 100:
+                self.log_message(f"⚠️ Limitation à 100 URLs (sur {len(urls)} trouvées) pour éviter les timeouts", "WARNING")
+                urls = urls[:100]
             
             # Stocker le nombre total d'URLs
             st.session_state.total_urls = len(urls)
@@ -182,26 +222,50 @@ class WebSEOOptimizer:
             self.log_message("🔍 Traitement des pages...")
             self.update_progress(10, 100, f"Traitement des pages (0/{len(urls)})")
             
-            # Modifier le process_urls pour inclure la progression
-            self.optimizer.process_urls_with_progress(urls, dimensions=dimensions, progress_callback=self.update_progress)
+            try:
+                # Modifier le process_urls pour inclure la progression
+                df = self.optimizer.process_urls_with_progress(urls, dimensions=dimensions, progress_callback=self.update_progress)
+                
+                if df.empty:
+                    self.log_message("❌ Aucune page n'a pu être traitée", "ERROR")
+                    return False
+                    
+            except Exception as e:
+                self.log_message(f"❌ Erreur lors du traitement des pages: {str(e)}", "ERROR")
+                return False
             
             # Calculer la similarité
             self.log_message("🧮 Calcul de la similarité sémantique...")
             self.update_progress(80, 100, "Calcul de la similarité...")
-            self.optimizer.calculate_similarity_matrix()
+            
+            try:
+                self.optimizer.calculate_similarity_matrix()
+            except Exception as e:
+                self.log_message(f"❌ Erreur lors du calcul de similarité: {str(e)}", "ERROR")
+                return False
             
             # Trouver les liens pertinents
             self.log_message("🔗 Recherche des liens pertinents...")
             self.update_progress(90, 100, "Recherche des liens...")
-            recommendations = self.optimizer.find_relevant_links(
-                min_similarity=min_similarity,
-                max_links=max_links
-            )
+            
+            try:
+                recommendations = self.optimizer.find_relevant_links(
+                    min_similarity=min_similarity,
+                    max_links=max_links
+                )
+            except Exception as e:
+                self.log_message(f"❌ Erreur lors de la recherche de liens: {str(e)}", "ERROR")
+                return False
             
             # Sauvegarder les résultats
             self.log_message("💾 Sauvegarde des résultats...")
             self.update_progress(95, 100, "Sauvegarde...")
-            self.optimizer.save_results(recommendations)
+            
+            try:
+                self.optimizer.save_results(recommendations)
+            except Exception as e:
+                self.log_message(f"⚠️ Erreur lors de la sauvegarde: {str(e)}", "WARNING")
+                # Ne pas échouer complètement si la sauvegarde échoue
             
             # Stocker les résultats dans la session
             st.session_state.results = recommendations
@@ -212,7 +276,7 @@ class WebSEOOptimizer:
             return True
             
         except Exception as e:
-            self.log_message(f"❌ Erreur: {str(e)}", "ERROR")
+            self.log_message(f"❌ Erreur générale: {str(e)}", "ERROR")
             return False
 
 def main():
@@ -347,6 +411,16 @@ def main():
                 st.error("⚠️ Veuillez saisir l'URL de votre sitemap")
                 return
             
+            # Bouton de diagnostic
+            if st.button("🔍 Diagnostiquer les problèmes", type="secondary"):
+                errors = app.diagnose_errors()
+                if errors:
+                    st.error("Problèmes détectés:")
+                    for error in errors:
+                        st.write(f"• {error}")
+                else:
+                    st.success("✅ Aucun problème détecté")
+            
             # Bouton de lancement
             if st.button("🚀 Lancer l'analyse", type="primary", disabled=app.analysis_running):
                 app.analysis_running = True
@@ -370,6 +444,7 @@ def main():
                     st.balloons()
                 else:
                     st.error("❌ Erreur lors de l'analyse")
+                    st.info("💡 Conseil: Utilisez le bouton 'Diagnostiquer les problèmes' pour identifier la cause")
             
             # Affichage des résultats
             if st.session_state.analysis_complete and st.session_state.results:

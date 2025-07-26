@@ -34,6 +34,8 @@ class InternalLinkingOptimizer:
             'User-Agent': 'Mozilla/5.0 (compatible; SEO Optimizer/1.0)'
         }
         self.timeout = 30
+        self.max_retries = 3  # Nombre de tentatives pour les requêtes
+        self.retry_delay = 2  # Délai entre les tentatives en secondes
         self.pages_data = {}
         self.embeddings = {}
         self.failed_urls = []
@@ -65,223 +67,230 @@ class InternalLinkingOptimizer:
             self.logger.warning(f"URL ignorée (média): {url}")
             return None
             
-        try:
-            response = requests.get(url, headers=self.headers, timeout=self.timeout)
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # Extraire le titre depuis l'URL si nécessaire
-            url_slug = url.split('/')[-1]
-            url_title = url_slug.replace('-', ' ').title()
-            
-            # STRATEGIE 1: Chercher le contenu de l'article spécifiquement
-            article_content = None
-            
-            # Sélecteurs WordPress courants pour le contenu principal
-            selectors = [
-                'article .entry-content',
-                'article .post-content',
-                'div.entry-content',
-                'div.post-content',
-                'main article .entry-content',
-                'main article .post-content',
-                'div.content-area article .entry-content',
-                '#content article .entry-content',
-                'article[itemtype*="Article"] .entry-content',
-                'article[itemtype*="BlogPosting"] .entry-content',
-                '.post-content',
-                '.article-content',
-                '.content-wrapper article',
-                'main .content',
-                '.post .entry-content',
-                '.hentry .entry-content'
-            ]
-            
-            for selector in selectors:
-                article_content = soup.select_one(selector)
-                if article_content:
-                    break
-            
-            # Si pas trouvé, chercher par balise article
-            if not article_content:
-                article_content = soup.find('article')
-            
-            # Titre de la page
-            title = ''
-            # D'abord chercher dans le contenu de l'article
-            if article_content:
-                h1 = article_content.find('h1')
-                if h1:
-                    title = h1.get_text(strip=True)
-            
-            # Sinon chercher un H1 global
-            if not title:
-                h1 = soup.find('h1')
-                if h1:
-                    title = h1.get_text(strip=True)
-            
-            # Sinon utiliser le title de la page
-            if not title:
-                title_tag = soup.find('title')
-                if title_tag:
-                    title = title_tag.get_text(strip=True).split(' - ')[0].split(' | ')[0]
-            
-            # En dernier recours, utiliser le titre de l'URL
-            if not title:
-                title = url_title
-            
-            # Si on a trouvé le contenu de l'article
-            if article_content:
-                # Supprimer les éléments non pertinents DANS l'article
-                for elem in article_content.find_all(['script', 'style', 'noscript']):
-                    elem.decompose()
+        # Tentatives multiples avec retry
+        for attempt in range(self.max_retries):
+            try:
+                response = requests.get(url, headers=self.headers, timeout=self.timeout)
+                response.raise_for_status()
+                soup = BeautifulSoup(response.text, 'html.parser')
                 
-                # Supprimer les éléments de partage social, commentaires, etc.
-                for elem in article_content.find_all(class_=re.compile(r'share|social|comment|related|author-bio|tags|categories')):
-                    elem.decompose()
+                # Extraire le titre depuis l'URL si nécessaire
+                url_slug = url.split('/')[-1]
+                url_title = url_slug.replace('-', ' ').title()
                 
-                # Extraire le texte
-                paragraphs = article_content.find_all(['p', 'li', 'h2', 'h3', 'h4'])
-                text_parts = []
+                # STRATEGIE 1: Chercher le contenu de l'article spécifiquement
+                article_content = None
                 
-                for p in paragraphs:
-                    text = p.get_text(strip=True)
-                    if len(text) > 20:  # Ignorer les paragraphes trop courts
-                        text_parts.append(text)
-                
-                content_text = ' '.join(text_parts)
-                
-                # Extraire les ingrédients et instructions si c'est une recette
-                ingredients = []
-                instructions = []
-                
-                # Chercher les ingrédients
-                for elem in article_content.find_all(['ul', 'div'], class_=re.compile(r'ingredient|recipe-ingredient')):
-                    for li in elem.find_all('li'):
-                        ingredients.append(li.get_text(strip=True))
-                
-                # Chercher les instructions
-                for elem in article_content.find_all(['ol', 'div'], class_=re.compile(r'instruction|direction|recipe-instruction')):
-                    for li in elem.find_all('li'):
-                        instructions.append(li.get_text(strip=True))
-                
-                # Ajouter les ingrédients et instructions au contenu
-                if ingredients:
-                    content_text += ' Ingrédients: ' + ' '.join(ingredients)
-                if instructions:
-                    content_text += ' Instructions: ' + ' '.join(instructions)
-                
-            else:
-                # Fallback: extraire le body mais nettoyer agressivement
-                self.logger.warning(f"Pas de contenu article trouvé pour {url}, extraction fallback")
-                
-                # Supprimer TOUT ce qui n'est pas le contenu principal
-                for elem in soup.find_all(['header', 'nav', 'footer', 'aside', 'sidebar', 'script', 'style']):
-                    elem.decompose()
-                
-                # Supprimer les éléments par classe
-                classes_to_remove = [
-                    'menu', 'widget', 'sidebar', 'nav', 'header', 'footer', 'breadcrumb',
-                    'social', 'share', 'comments', 'related', 'author-box', 'newsletter',
-                    'popup', 'modal', 'overlay', 'advertisement', 'ads', 'banner'
+                # Sélecteurs WordPress courants pour le contenu principal
+                selectors = [
+                    'article .entry-content',
+                    'article .post-content',
+                    'div.entry-content',
+                    'div.post-content',
+                    'main article .entry-content',
+                    'main article .post-content',
+                    'div.content-area article .entry-content',
+                    '#content article .entry-content',
+                    'article[itemtype*="Article"] .entry-content',
+                    'article[itemtype*="BlogPosting"] .entry-content',
+                    '.post-content',
+                    '.article-content',
+                    '.content-wrapper article',
+                    'main .content',
+                    '.post .entry-content',
+                    '.hentry .entry-content'
                 ]
-                for elem in soup.find_all(class_=re.compile('|'.join(classes_to_remove), re.I)):
-                    elem.decompose()
                 
-                # Supprimer les éléments par ID
-                for elem in soup.find_all(id=re.compile('|'.join(classes_to_remove), re.I)):
-                    elem.decompose()
+                for selector in selectors:
+                    article_content = soup.select_one(selector)
+                    if article_content:
+                        break
                 
-                # Supprimer les liens de navigation répétitifs
-                for elem in soup.find_all('a', string=re.compile(r'^(Home|Accueil|Contact|Menu|Plus|Suivant|Précédent)$', re.I)):
-                    elem.decompose()
+                # STRATEGIE 2: Si pas trouvé, chercher dans le body
+                if not article_content:
+                    # Chercher le contenu principal
+                    main_selectors = [
+                        'main',
+                        '#main',
+                        '.main',
+                        '#content',
+                        '.content',
+                        'article',
+                        '.post',
+                        '.entry'
+                    ]
+                    
+                    for selector in main_selectors:
+                        article_content = soup.select_one(selector)
+                        if article_content:
+                            break
                 
-                # Prendre le texte restant
-                content_text = soup.get_text(separator=' ', strip=True)
-            
-            # Nettoyer le contenu
-            content_text = re.sub(r'\s+', ' ', content_text)
-            content_text = content_text.strip()
-            
-            # Supprimer les phrases répétitives du template
-            template_phrases = [
-                r'Aller au contenu principal',
-                r'Skip to content',
-                r'Rechercher:',
-                r'Search for:',
-                r'Menu principal',
-                r'Main menu',
-                r'Suivez-nous sur',
-                r'Follow us on',
-                r'Partager sur',
-                r'Share on',
-                r'Articles récents',
-                r'Recent posts',
-                r'Catégories',
-                r'Categories',
-                r'Archives',
-                r'Laisser un commentaire',
-                r'Leave a comment',
-                r'Votre adresse e-mail',
-                r'Your email',
-                r'Copyright \d{4}',
-                r'Tous droits réservés',
-                r'All rights reserved',
-                r'Propulsé par',
-                r'Powered by'
-            ]
-            
-            for phrase in template_phrases:
-                content_text = re.sub(phrase, '', content_text, flags=re.IGNORECASE)
-            
-            # Limiter la longueur
-            content_text = content_text[:2000]  # Réduire pour se concentrer sur l'essentiel
-            
-            # Vérification de longueur minimale
-            word_count = len(content_text.split())
-            if word_count < 20:
-                self.logger.warning(f"Contenu trop court pour {url}: {word_count} mots")
+                # STRATEGIE 3: Fallback sur le body
+                if not article_content:
+                    article_content = soup.find('body')
+                
+                # Extraire le titre
+                title = ""
+                title_elem = soup.find('title')
+                if title_elem:
+                    title = title_elem.get_text(strip=True)
+                elif soup.find('h1'):
+                    title = soup.find('h1').get_text(strip=True)
+                else:
+                    title = url_title
+                
+                # Extraire le contenu
+                if article_content:
+                    # Supprimer les éléments de navigation et footer
+                    for elem in article_content.find_all(['nav', 'footer', 'aside', 'script', 'style']):
+                        elem.decompose()
+                    
+                    content_text = article_content.get_text(separator=' ', strip=True)
+                else:
+                    content_text = soup.get_text(separator=' ', strip=True)
+                
+                # Nettoyer le contenu
+                content_text = re.sub(r'\s+', ' ', content_text)
+                content_text = content_text.strip()
+                
+                # Supprimer les phrases répétitives du template
+                template_phrases = [
+                    r'Aller au contenu principal',
+                    r'Skip to content',
+                    r'Rechercher:',
+                    r'Search for:',
+                    r'Menu principal',
+                    r'Main menu',
+                    r'Suivez-nous sur',
+                    r'Follow us on',
+                    r'Partager sur',
+                    r'Share on',
+                    r'Articles récents',
+                    r'Recent posts',
+                    r'Catégories',
+                    r'Categories',
+                    r'Archives',
+                    r'Laisser un commentaire',
+                    r'Leave a comment',
+                    r'Votre adresse e-mail',
+                    r'Your email',
+                    r'Copyright \d{4}',
+                    r'Tous droits réservés',
+                    r'All rights reserved',
+                    r'Propulsé par',
+                    r'Powered by'
+                ]
+                
+                for phrase in template_phrases:
+                    content_text = re.sub(phrase, '', content_text, flags=re.IGNORECASE)
+                
+                # Limiter la longueur
+                content_text = content_text[:2000]  # Réduire pour se concentrer sur l'essentiel
+                
+                # Vérification de longueur minimale
+                word_count = len(content_text.split())
+                if word_count < 20:
+                    self.logger.warning(f"Contenu trop court pour {url}: {word_count} mots")
+                    return None
+                
+                # IMPORTANT: Utiliser uniquement le contenu réel pour l'embedding
+                # Ne pas répéter artificiellement des éléments
+                combined = f"{title} {content_text}"
+                
+                return {
+                    'url': url,
+                    'title': title,
+                    'content': content_text,
+                    'word_count': word_count,
+                    'combined': combined,
+                    'url_slug': url_slug
+                }
+                
+            except requests.exceptions.Timeout:
+                self.logger.warning(f"Timeout pour {url} (tentative {attempt + 1}/{self.max_retries})")
+                if attempt < self.max_retries - 1:
+                    time.sleep(self.retry_delay)
+                    continue
+                else:
+                    self.logger.error(f"Timeout final pour {url}")
+                    return None
+                    
+            except requests.exceptions.ConnectionError:
+                self.logger.warning(f"Erreur de connexion pour {url} (tentative {attempt + 1}/{self.max_retries})")
+                if attempt < self.max_retries - 1:
+                    time.sleep(self.retry_delay)
+                    continue
+                else:
+                    self.logger.error(f"Erreur de connexion finale pour {url}")
+                    return None
+                    
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 404:
+                    self.logger.warning(f"Page 404: {url}")
+                    return None
+                elif e.response.status_code >= 500:
+                    self.logger.warning(f"Erreur serveur {e.response.status_code} pour {url} (tentative {attempt + 1}/{self.max_retries})")
+                    if attempt < self.max_retries - 1:
+                        time.sleep(self.retry_delay)
+                        continue
+                    else:
+                        self.logger.error(f"Erreur serveur finale pour {url}")
+                        return None
+                else:
+                    self.logger.error(f"Erreur HTTP {e.response.status_code} pour {url}")
+                    return None
+                    
+            except Exception as e:
+                self.logger.error(f"Erreur extraction {url}: {str(e)}")
                 return None
-            
-            # IMPORTANT: Utiliser uniquement le contenu réel pour l'embedding
-            # Ne pas répéter artificiellement des éléments
-            combined = f"{title} {content_text}"
-            
-            return {
-                'url': url,
-                'title': title,
-                'content': content_text,
-                'word_count': word_count,
-                'combined': combined,
-                'url_slug': url_slug
-            }
-            
-        except Exception as e:
-            self.logger.error(f"Erreur extraction {url}: {str(e)}")
-            return None
+        
+        return None
 
     def get_embedding(self, text: str) -> List[float]:
         """Obtient l'embedding pour un texte."""
-        try:
-            # Limiter la taille du texte
-            text = text[:8000]
-            
-            # Préparer les paramètres
-            params = {
-                "model": self.model,
-                "input": text
-            }
-            
-            # Ajouter les dimensions si spécifiées
-            if hasattr(self, 'dimensions') and self.dimensions:
-                params["dimensions"] = self.dimensions
-            
-            response = self.client.embeddings.create(**params)
-            return response.data[0].embedding
-            
-        except Exception as e:
-            self.logger.error(f"Erreur embedding: {str(e)}")
-            return None
+        # Tentatives multiples avec retry pour les erreurs OpenAI
+        for attempt in range(self.max_retries):
+            try:
+                # Limiter la taille du texte
+                text = text[:8000]
+                
+                # Préparer les paramètres
+                params = {
+                    "model": self.model,
+                    "input": text
+                }
+                
+                # Ajouter les dimensions si spécifiées
+                if hasattr(self, 'dimensions') and self.dimensions:
+                    params["dimensions"] = self.dimensions
+                
+                response = self.client.embeddings.create(**params)
+                return response.data[0].embedding
+                
+            except openai.RateLimitError:
+                self.logger.warning(f"Rate limit OpenAI (tentative {attempt + 1}/{self.max_retries})")
+                if attempt < self.max_retries - 1:
+                    # Attendre plus longtemps pour les rate limits
+                    time.sleep(self.retry_delay * (attempt + 1))
+                    continue
+                else:
+                    self.logger.error("Rate limit OpenAI final")
+                    return None
+                    
+            except openai.APIError as e:
+                self.logger.warning(f"Erreur API OpenAI (tentative {attempt + 1}/{self.max_retries}): {str(e)}")
+                if attempt < self.max_retries - 1:
+                    time.sleep(self.retry_delay)
+                    continue
+                else:
+                    self.logger.error(f"Erreur API OpenAI finale: {str(e)}")
+                    return None
+                    
+            except Exception as e:
+                self.logger.error(f"Erreur embedding: {str(e)}")
+                return None
+        
+        return None
 
     def calculate_similarity_matrix(self):
         """Calcule la matrice de similarité entre toutes les pages."""
@@ -664,38 +673,48 @@ class InternalLinkingOptimizer:
         
         # Extraction du contenu
         for i, url in enumerate(urls, 1):
-            self.logger.info(f"[{i}/{len(urls)}] Extraction: {url}")
-            
-            # Mettre à jour la progression
-            if progress_callback:
-                progress_percent = 10 + int((i / len(urls)) * 70)  # 10% à 80%
-                progress_callback(progress_percent, 100, f"Traitement des pages ({i}/{len(urls)})")
-            
-            content = self.extract_page_content(url)
-            if content:
-                self.pages_data[url] = content
+            try:
+                self.logger.info(f"[{i}/{len(urls)}] Extraction: {url}")
                 
-                # Obtenir l'embedding
-                embedding = self.get_embedding(content['combined'])
-                if embedding:
-                    self.embeddings[url] = embedding
+                # Mettre à jour la progression
+                if progress_callback:
+                    progress_percent = 10 + int((i / len(urls)) * 70)  # 10% à 80%
+                    progress_callback(progress_percent, 100, f"Traitement des pages ({i}/{len(urls)})")
+                
+                content = self.extract_page_content(url)
+                if content:
+                    self.pages_data[url] = content
                     
-                    # Ajouter aux données pour le DataFrame
-                    processed_data.append({
-                        'url': url,
-                        'title': content.get('title', ''),
-                        'content': content.get('content', '')[:500],  # Limiter pour l'affichage
-                        'word_count': content.get('word_count', 0),
-                        'embedding': embedding
-                    })
+                    # Obtenir l'embedding
+                    embedding = self.get_embedding(content['combined'])
+                    if embedding:
+                        self.embeddings[url] = embedding
+                        
+                        # Ajouter aux données pour le DataFrame
+                        processed_data.append({
+                            'url': url,
+                            'title': content.get('title', ''),
+                            'content': content.get('content', '')[:500],  # Limiter pour l'affichage
+                            'word_count': content.get('word_count', 0),
+                            'embedding': embedding
+                        })
+                    else:
+                        self.failed_urls.append(url)
+                        self.logger.warning(f"Échec embedding pour {url}")
                 else:
                     self.failed_urls.append(url)
-            else:
+                    self.logger.warning(f"Échec extraction pour {url}")
+                
+                # Pause intelligente pour éviter la surcharge
+                if i % 5 == 0:  # Pause toutes les 5 URLs
+                    time.sleep(1)
+                elif i % 20 == 0:  # Pause plus longue toutes les 20 URLs
+                    time.sleep(3)
+                    
+            except Exception as e:
+                self.logger.error(f"Erreur lors du traitement de {url}: {str(e)}")
                 self.failed_urls.append(url)
-            
-            # Pause pour éviter la surcharge
-            if i % 10 == 0:
-                time.sleep(1)
+                continue
         
         self.logger.info(f"Pages traitées: {len(self.pages_data)}")
         self.logger.info(f"Échecs: {len(self.failed_urls)}")
