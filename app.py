@@ -16,7 +16,7 @@ from internal_linking_optimizer import InternalLinkingOptimizer
 
 # Configuration de la page
 st.set_page_config(
-    page_title="🔗 Optimiseur SEO - Maillage Interne",
+    page_title="Optimiseur SEO - Maillage Interne",
     page_icon="🔗",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -148,7 +148,7 @@ class WebSEOOptimizer:
         st.session_state.current_step = step
     
     def diagnose_errors(self):
-        """Diagnostique les erreurs courantes."""
+        """Diagnostique les erreurs courantes avec test d'authentification OpenAI."""
         errors = []
         
         # Vérifier la clé API
@@ -156,13 +156,39 @@ class WebSEOOptimizer:
             errors.append("❌ Clé API OpenAI manquante")
         elif not st.session_state.api_key.startswith("sk-"):
             errors.append("❌ Format de clé API invalide")
+        else:
+            # Tester l'authentification OpenAI avec un petit embedding
+            try:
+                import openai
+                client = openai.OpenAI(api_key=st.session_state.api_key)
+                
+                # Test simple avec un petit texte
+                response = client.embeddings.create(
+                    model="text-embedding-3-small",
+                    input="test"
+                )
+                
+                if response and response.data:
+                    # Test réussi
+                    pass
+                else:
+                    errors.append("⚠️ Problème de connexion à OpenAI")
+                    
+            except openai.AuthenticationError:
+                errors.append("❌ Clé API OpenAI invalide ou expirée")
+            except openai.RateLimitError:
+                errors.append("⚠️ Rate limit OpenAI atteint - Attendez quelques minutes")
+            except openai.APIError as e:
+                errors.append(f"⚠️ Erreur API OpenAI: {str(e)}")
+            except Exception as e:
+                errors.append(f"⚠️ Problème de connexion à OpenAI: {str(e)}")
         
         # Vérifier la connexion internet
         try:
             import requests
-            response = requests.get("https://api.openai.com", timeout=5)
+            response = requests.get("https://api.openai.com", timeout=10)  # Timeout augmenté
             if response.status_code != 200:
-                errors.append("⚠️ Problème de connexion à OpenAI")
+                errors.append("⚠️ Problème de connexion réseau à OpenAI")
         except:
             errors.append("❌ Pas de connexion internet")
         
@@ -193,11 +219,11 @@ class WebSEOOptimizer:
             # Configurer les paramètres selon le mode
             if processing_mode == "Rapide":
                 max_concurrent_requests = min(20, max_concurrent_requests + 5)
-                max_concurrent_embeddings = min(10, max_concurrent_embeddings + 2)
+                max_concurrent_embeddings = min(8, max_concurrent_embeddings + 2)  # Limité à 8 pour éviter les rate limits
                 batch_size = min(100, batch_size + 25)
             elif processing_mode == "Prudent":
                 max_concurrent_requests = max(5, max_concurrent_requests - 5)
-                max_concurrent_embeddings = max(3, max_concurrent_embeddings - 2)
+                max_concurrent_embeddings = max(2, max_concurrent_embeddings - 2)  # Minimum 2
                 batch_size = max(25, batch_size - 25)
             
             # Initialiser l'optimiseur avec les paramètres de parallélisation
@@ -208,6 +234,12 @@ class WebSEOOptimizer:
                 max_concurrent_embeddings=max_concurrent_embeddings,
                 batch_size=batch_size
             )
+            
+            # Tester la connexion OpenAI avant de commencer
+            self.log_message("🔍 Test de connexion OpenAI...")
+            if not self.optimizer.test_openai_connection():
+                self.log_message("❌ Impossible de se connecter à OpenAI. Vérifiez votre clé API.", "ERROR")
+                return False
             
             # Extraire les URLs du sitemap
             self.log_message(f"📋 Extraction des URLs depuis: {sitemap_url}")
@@ -223,6 +255,21 @@ class WebSEOOptimizer:
             if len(urls) == 0:
                 self.log_message("❌ Aucune URL trouvée dans le sitemap", "ERROR")
                 return False
+            
+            # Ajuster les paramètres selon le volume d'URLs pour le mode Auto
+            if processing_mode == "Auto":
+                if len(urls) > 500:
+                    max_concurrent_embeddings = min(5, max_concurrent_embeddings)  # Limiter pour les gros volumes
+                    batch_size = min(50, batch_size)
+                elif len(urls) > 200:
+                    max_concurrent_embeddings = min(6, max_concurrent_embeddings)
+                    batch_size = min(75, batch_size)
+                else:
+                    max_concurrent_embeddings = min(7, max_concurrent_embeddings)
+                
+                # Mettre à jour l'optimiseur avec les nouveaux paramètres
+                self.optimizer.max_concurrent_embeddings = max_concurrent_embeddings
+                self.optimizer.batch_size = batch_size
             
             # Afficher les informations de performance
             time_estimate = self.optimizer.estimate_processing_time(len(urls))

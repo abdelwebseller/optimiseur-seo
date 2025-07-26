@@ -394,7 +394,7 @@ class InternalLinkingOptimizer:
         return url, None
 
     def get_embedding(self, text: str) -> List[float]:
-        """Obtient l'embedding pour un texte."""
+        """Obtient l'embedding pour un texte avec gestion robuste des erreurs."""
         # Tentatives multiples avec retry pour les erreurs OpenAI
         for attempt in range(self.max_retries):
             try:
@@ -415,33 +415,53 @@ class InternalLinkingOptimizer:
                 return response.data[0].embedding
                 
             except openai.RateLimitError:
-                self.logger.warning(f"Rate limit OpenAI (tentative {attempt + 1}/{self.max_retries})")
+                wait_time = min(60, self.retry_delay * (2 ** attempt))  # Backoff exponentiel, max 60s
+                self.logger.warning(f"Rate limit OpenAI (tentative {attempt + 1}/{self.max_retries}) - Attente {wait_time}s")
                 if attempt < self.max_retries - 1:
-                    # Attendre plus longtemps pour les rate limits
-                    time.sleep(self.retry_delay * (attempt + 1))
+                    time.sleep(wait_time)
                     continue
                 else:
-                    self.logger.error("Rate limit OpenAI final")
-                    return None
+                    self.logger.error("Rate limit OpenAI final - Impossible de continuer")
+                    raise Exception("Rate limit OpenAI atteint")
                     
             except openai.APIError as e:
-                self.logger.warning(f"Erreur API OpenAI (tentative {attempt + 1}/{self.max_retries}): {str(e)}")
+                wait_time = self.retry_delay * (attempt + 1)
+                self.logger.warning(f"Erreur API OpenAI (tentative {attempt + 1}/{self.max_retries}): {str(e)} - Attente {wait_time}s")
+                if attempt < self.max_retries - 1:
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    self.logger.error(f"Erreur API OpenAI finale: {str(e)}")
+                    raise Exception(f"Erreur API OpenAI: {str(e)}")
+                    
+            except openai.AuthenticationError:
+                self.logger.error("Erreur d'authentification OpenAI - Vérifiez votre clé API")
+                raise Exception("Clé API OpenAI invalide")
+                
+            except openai.APITimeoutError:
+                wait_time = self.retry_delay * (attempt + 1)
+                self.logger.warning(f"Timeout OpenAI (tentative {attempt + 1}/{self.max_retries}) - Attente {wait_time}s")
+                if attempt < self.max_retries - 1:
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    self.logger.error("Timeout OpenAI final")
+                    raise Exception("Timeout OpenAI")
+                    
+            except Exception as e:
+                self.logger.error(f"Erreur embedding inattendue: {str(e)}")
                 if attempt < self.max_retries - 1:
                     time.sleep(self.retry_delay)
                     continue
                 else:
-                    self.logger.error(f"Erreur API OpenAI finale: {str(e)}")
-                    return None
-                    
-            except Exception as e:
-                self.logger.error(f"Erreur embedding: {str(e)}")
-                return None
+                    raise Exception(f"Erreur embedding: {str(e)}")
         
         return None
 
     def get_embedding_batch(self, texts: List[str]) -> List[Optional[List[float]]]:
-        """Obtient les embeddings pour une liste de textes en parallèle."""
+        """Obtient les embeddings pour une liste de textes en parallèle avec gestion d'erreurs améliorée."""
         embeddings = []
+        failed_count = 0
         
         with ThreadPoolExecutor(max_workers=self.max_concurrent_embeddings) as executor:
             # Soumettre toutes les tâches
@@ -453,9 +473,19 @@ class InternalLinkingOptimizer:
                     embedding = future.result()
                     embeddings.append(embedding)
                 except Exception as e:
-                    self.logger.error(f"Erreur embedding: {str(e)}")
+                    failed_count += 1
+                    self.logger.error(f"Erreur embedding dans le batch: {str(e)}")
                     embeddings.append(None)
+                    
+                    # Si trop d'échecs, arrêter le traitement
+                    if failed_count > len(texts) * 0.3:  # Plus de 30% d'échecs
+                        self.logger.error(f"Trop d'échecs d'embeddings ({failed_count}/{len(texts)}). Arrêt du traitement.")
+                        # Annuler les tâches restantes
+                        for f in future_to_text:
+                            f.cancel()
+                        raise Exception(f"Trop d'échecs d'embeddings: {failed_count}/{len(texts)}")
         
+        self.logger.info(f"Embeddings générés: {len([e for e in embeddings if e is not None])}/{len(texts)}")
         return embeddings
 
     def calculate_similarity_matrix(self):
@@ -896,16 +926,35 @@ class InternalLinkingOptimizer:
                 # Obtenir les embeddings en parallèle
                 if texts_for_embedding:
                     self.logger.info(f"Génération des embeddings pour {len(texts_for_embedding)} pages...")
-                    embeddings = self.get_embedding_batch(texts_for_embedding)
-                    
-                    # Associer les embeddings aux URLs
-                    for i, (url, embedding) in enumerate(zip(urls_for_embedding, embeddings)):
-                        if embedding:
-                            self.embeddings[url] = embedding
-                            batch_data[i]['embedding'] = embedding
+                    try:
+                        embeddings = self.get_embedding_batch(texts_for_embedding)
+                        
+                        # Associer les embeddings aux URLs
+                        for i, (url, embedding) in enumerate(zip(urls_for_embedding, embeddings)):
+                            if embedding:
+                                self.embeddings[url] = embedding
+                                batch_data[i]['embedding'] = embedding
+                            else:
+                                self.failed_urls.append(url)
+                                batch_data[i]['embedding'] = None
+                                
+                    except Exception as e:
+                        self.logger.error(f"Erreur critique lors de la génération des embeddings: {str(e)}")
+                        # Marquer toutes les URLs du batch comme échouées
+                        for url in batch_urls:
+                            if url not in self.failed_urls:
+                                self.failed_urls.append(url)
+                        
+                        # Si c'est un problème de rate limit, faire une pause plus longue
+                        if "rate limit" in str(e).lower():
+                            self.logger.warning("Rate limit détecté - Pause de 60 secondes...")
+                            await asyncio.sleep(60)
+                        elif "timeout" in str(e).lower():
+                            self.logger.warning("Timeout détecté - Pause de 30 secondes...")
+                            await asyncio.sleep(30)
                         else:
-                            self.failed_urls.append(url)
-                            batch_data[i]['embedding'] = None
+                            # Pour les autres erreurs, pause courte
+                            await asyncio.sleep(10)
                 
                 all_processed_data.extend(batch_data)
                 
@@ -1157,6 +1206,37 @@ class InternalLinkingOptimizer:
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(html)
 
+    def test_openai_connection(self) -> bool:
+        """Teste la connexion OpenAI avant de commencer l'analyse."""
+        try:
+            self.logger.info("Test de connexion OpenAI...")
+            
+            # Test simple avec un petit texte
+            response = self.client.embeddings.create(
+                model=self.model,
+                input="test de connexion"
+            )
+            
+            if response and response.data and len(response.data[0].embedding) > 0:
+                self.logger.info("✅ Connexion OpenAI OK")
+                return True
+            else:
+                self.logger.error("❌ Réponse OpenAI invalide")
+                return False
+                
+        except openai.AuthenticationError:
+            self.logger.error("❌ Erreur d'authentification OpenAI")
+            return False
+        except openai.RateLimitError:
+            self.logger.error("❌ Rate limit OpenAI atteint")
+            return False
+        except openai.APIError as e:
+            self.logger.error(f"❌ Erreur API OpenAI: {str(e)}")
+            return False
+        except Exception as e:
+            self.logger.error(f"❌ Erreur de connexion OpenAI: {str(e)}")
+            return False
+
     def check_memory_usage(self) -> dict:
         """Vérifie l'utilisation mémoire et retourne les statistiques."""
         try:
@@ -1227,6 +1307,11 @@ def main():
     
     optimizer = InternalLinkingOptimizer(api_key)
     
+    # Tester la connexion OpenAI
+    if not optimizer.test_openai_connection():
+        print("Erreur: Impossible de se connecter à l'API OpenAI. Vérifiez votre clé API.")
+        return
+
     # Obtenir les URLs
     if args.sitemap or args.url.endswith('.xml'):
         # Charger depuis sitemap
