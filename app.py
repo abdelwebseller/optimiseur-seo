@@ -205,7 +205,8 @@ class WebSEOOptimizer:
     
     def run_analysis(self, sitemap_url, min_similarity, max_links, embedding_model, use_reduced_dimensions, 
                     embedding_dimensions, max_concurrent_requests, max_concurrent_embeddings, 
-                    batch_size, processing_mode):
+                    batch_size, processing_mode, optimize_anchors=False, anchor_rewrite_model="gpt-4o-mini",
+                    anchor_rewrite_temperature=0.7, anchor_rewrite_prompt=""):
         """Lance l'analyse en arrière-plan."""
         try:
             # Réinitialiser la progression
@@ -336,6 +337,27 @@ class WebSEOOptimizer:
             except Exception as e:
                 self.log_message(f"❌ Erreur lors de la recherche de liens: {str(e)}", "ERROR")
                 return False
+            
+            # Réécriture des ancres avec l'IA (étape facultative)
+            if optimize_anchors and recommendations:
+                self.log_message("✍️ Réécriture des ancres avec l'IA...")
+                self.update_progress(92, 100, "Réécriture des ancres...")
+                
+                try:
+                    # Stocker les paramètres de réécriture dans l'optimiseur
+                    self.optimizer.anchor_rewrite_config = {
+                        'model': anchor_rewrite_model,
+                        'temperature': anchor_rewrite_temperature,
+                        'prompt': anchor_rewrite_prompt
+                    }
+                    
+                    # Réécrire les ancres
+                    recommendations = self.optimizer.rewrite_anchors_with_ai(recommendations)
+                    self.log_message(f"✅ {len(recommendations)} ancres réécrites avec succès!")
+                    
+                except Exception as e:
+                    self.log_message(f"⚠️ Erreur lors de la réécriture des ancres: {str(e)}", "WARNING")
+                    # Continuer avec les ancres originales si la réécriture échoue
             
             # Sauvegarder les résultats
             self.log_message("💾 Sauvegarde des résultats...")
@@ -492,6 +514,59 @@ def main():
                     index=0,
                     help="Auto: détection automatique, Rapide: parallélisation maximale, Standard: équilibré, Prudent: séquentiel"
                 )
+        
+        # Configuration de réécriture des ancres
+        st.header("✍️ Réécriture des ancres")
+        
+        optimize_anchors = st.checkbox(
+            "Rédaction des ancres optimisée avec l'IA",
+            value=False,
+            help="Réécrire les ancres générées pour les rendre plus naturelles et engageantes"
+        )
+        
+        if optimize_anchors:
+            with st.expander("🔧 Configuration de réécriture"):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    anchor_rewrite_model = st.selectbox(
+                        "Modèle d'IA pour réécriture",
+                        ["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"],
+                        index=0,
+                        help="Modèle OpenAI pour réécrire les ancres"
+                    )
+                
+                with col2:
+                    anchor_rewrite_temperature = st.slider(
+                        "Créativité",
+                        min_value=0.0,
+                        max_value=1.0,
+                        value=0.7,
+                        step=0.1,
+                        help="Niveau de créativité pour la réécriture (0 = très conservateur, 1 = très créatif)"
+                    )
+                
+                # Prompt personnalisé
+                default_prompt = """Réécris cette ancre de lien pour qu'elle soit plus naturelle et engageante, tout en conservant les mots-clés importants. 
+
+Règles à suivre :
+- Garde tous les mots-clés techniques et spécifiques
+- Ajoute des mots de liaison naturels
+- Rends le texte plus fluide et lisible
+- Évite les répétitions
+- Utilise un ton professionnel mais accessible
+- Longueur : 3-8 mots maximum
+
+Ancre originale : {anchor}
+
+Ancre réécrite :"""
+
+                anchor_rewrite_prompt = st.text_area(
+                    "Prompt personnalisé",
+                    value=default_prompt,
+                    height=150,
+                    help="Prompt personnalisé pour la réécriture des ancres. Utilisez {anchor} pour référencer l'ancre originale."
+                )
     
     # Contenu principal selon la page sélectionnée
     if selected_page == "🏠 Accueil":
@@ -558,7 +633,11 @@ def main():
                     max_concurrent_requests=max_concurrent_requests,
                     max_concurrent_embeddings=max_concurrent_embeddings,
                     batch_size=batch_size,
-                    processing_mode=processing_mode
+                    processing_mode=processing_mode,
+                    optimize_anchors=optimize_anchors,
+                    anchor_rewrite_model=anchor_rewrite_model,
+                    anchor_rewrite_temperature=anchor_rewrite_temperature,
+                    anchor_rewrite_prompt=anchor_rewrite_prompt
                 )
                 
                 app.analysis_running = False
@@ -642,18 +721,34 @@ def main():
                 
                 # Préparer les données pour le tableau
                 table_data = []
+                has_rewritten_anchors = any(
+                    any('anchor_rewritten' in link for link in data['recommended_links'])
+                    for data in st.session_state.results.values()
+                )
+                
                 for source_url, data in st.session_state.results.items():
                     for link in data['recommended_links']:
-                        table_data.append({
+                        row_data = {
                             'Page source': data['source_title'] or 'Sans titre',
                             'URL source': source_url,
                             'Ancre suggérée': link['anchor_text'],
                             'URL cible': link['target_url'],
                             'Score (%)': f"{link['similarity_score'] * 100:.1f}%"
-                        })
+                        }
+                        
+                        # Ajouter l'ancre réécrite si disponible
+                        if has_rewritten_anchors:
+                            row_data['Ancre optimisée (IA)'] = link.get('anchor_rewritten', '')
+                        
+                        table_data.append(row_data)
                 
                 if table_data:
                     df = pd.DataFrame(table_data)
+                    
+                    # Afficher le tableau avec style
+                    if has_rewritten_anchors:
+                        st.info("✏️ Les ancres ont été optimisées avec l'IA pour plus de naturel")
+                    
                     st.dataframe(df, use_container_width=True)
                     
                     # Boutons d'export

@@ -1088,37 +1088,153 @@ class InternalLinkingOptimizer:
         try:
             with open(csv_path, 'w', newline='', encoding='utf-8-sig') as f:
                 writer = csv.writer(f)
-                writer.writerow(['Source URL', 'Source Title', 'Target URL', 'Target Title', 
-                               'Anchor Text', 'Similarity Score'])
+                
+                # Vérifier si des ancres ont été réécrites
+                has_rewritten_anchors = any(
+                    any('anchor_rewritten' in link for link in data['recommended_links'])
+                    for data in recommendations.values()
+                )
+                
+                if has_rewritten_anchors:
+                    writer.writerow(['Source URL', 'Source Title', 'Target URL', 'Target Title', 
+                                   'Anchor Text', 'Anchor Text (IA)', 'Similarity Score'])
+                else:
+                    writer.writerow(['Source URL', 'Source Title', 'Target URL', 'Target Title', 
+                                   'Anchor Text', 'Similarity Score'])
                 
                 for source_url, data in recommendations.items():
                     for link in data['recommended_links']:
-                        writer.writerow([
-                            source_url,
-                            data['source_title'],
-                            link['target_url'],
-                            link['target_title'],
-                            link['anchor_text'],
-                            f"{link['similarity_score']:.2%}"
-                        ])
+                        if has_rewritten_anchors:
+                            writer.writerow([
+                                source_url,
+                                data['source_title'],
+                                link['target_url'],
+                                link['target_title'],
+                                link['anchor_text'],
+                                link.get('anchor_rewritten', ''),
+                                f"{link['similarity_score']:.2%}"
+                            ])
+                        else:
+                            writer.writerow([
+                                source_url,
+                                data['source_title'],
+                                link['target_url'],
+                                link['target_title'],
+                                link['anchor_text'],
+                                f"{link['similarity_score']:.2%}"
+                            ])
         except PermissionError:
             csv_path = output_path / f"{base_name}_{timestamp}.csv"
             with open(csv_path, 'w', newline='', encoding='utf-8-sig') as f:
                 writer = csv.writer(f)
-                writer.writerow(['Source URL', 'Source Title', 'Target URL', 'Target Title', 
-                               'Anchor Text', 'Similarity Score'])
+                
+                # Vérifier si des ancres ont été réécrites
+                has_rewritten_anchors = any(
+                    any('anchor_rewritten' in link for link in data['recommended_links'])
+                    for data in recommendations.values()
+                )
+                
+                if has_rewritten_anchors:
+                    writer.writerow(['Source URL', 'Source Title', 'Target URL', 'Target Title', 
+                                   'Anchor Text', 'Anchor Text (IA)', 'Similarity Score'])
+                else:
+                    writer.writerow(['Source URL', 'Source Title', 'Target URL', 'Target Title', 
+                                   'Anchor Text', 'Similarity Score'])
                 
                 for source_url, data in recommendations.items():
                     for link in data['recommended_links']:
-                        writer.writerow([
-                            source_url,
-                            data['source_title'],
-                            link['target_url'],
-                            link['target_title'],
-                            link['anchor_text'],
-                            f"{link['similarity_score']:.2%}"
-                        ])
+                        if has_rewritten_anchors:
+                            writer.writerow([
+                                source_url,
+                                data['source_title'],
+                                link['target_url'],
+                                link['target_title'],
+                                link['anchor_text'],
+                                link.get('anchor_rewritten', ''),
+                                f"{link['similarity_score']:.2%}"
+                            ])
+                        else:
+                            writer.writerow([
+                                source_url,
+                                data['source_title'],
+                                link['target_url'],
+                                link['target_title'],
+                                link['anchor_text'],
+                                f"{link['similarity_score']:.2%}"
+                            ])
             self.logger.warning(f"Fichier CSV verrouillé, sauvegardé sous: {csv_path}")
+        
+        # Excel (si openpyxl est disponible)
+        try:
+            import openpyxl
+            from openpyxl.styles import Font, PatternFill, Alignment
+            
+            excel_path = output_path / f"{base_name}.xlsx"
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Recommandations"
+            
+            # Vérifier si des ancres ont été réécrites
+            has_rewritten_anchors = any(
+                any('anchor_rewritten' in link for link in data['recommended_links'])
+                for data in recommendations.values()
+            )
+            
+            # En-têtes
+            if has_rewritten_anchors:
+                headers = ['Source URL', 'Source Title', 'Target URL', 'Target Title', 
+                          'Anchor Text', 'Anchor Text (IA)', 'Similarity Score']
+            else:
+                headers = ['Source URL', 'Source Title', 'Target URL', 'Target Title', 
+                          'Anchor Text', 'Similarity Score']
+            
+            for col, header in enumerate(headers, 1):
+                cell = ws.cell(row=1, column=col, value=header)
+                cell.font = Font(bold=True)
+                cell.fill = PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
+                cell.alignment = Alignment(horizontal="center")
+            
+            # Données
+            row = 2
+            for source_url, data in recommendations.items():
+                for link in data['recommended_links']:
+                    if has_rewritten_anchors:
+                        ws.cell(row=row, column=1, value=source_url)
+                        ws.cell(row=row, column=2, value=data['source_title'])
+                        ws.cell(row=row, column=3, value=link['target_url'])
+                        ws.cell(row=row, column=4, value=link['target_title'])
+                        ws.cell(row=row, column=5, value=link['anchor_text'])
+                        ws.cell(row=row, column=6, value=link.get('anchor_rewritten', ''))
+                        ws.cell(row=row, column=7, value=f"{link['similarity_score']:.2%}")
+                    else:
+                        ws.cell(row=row, column=1, value=source_url)
+                        ws.cell(row=row, column=2, value=data['source_title'])
+                        ws.cell(row=row, column=3, value=link['target_url'])
+                        ws.cell(row=row, column=4, value=link['target_title'])
+                        ws.cell(row=row, column=5, value=link['anchor_text'])
+                        ws.cell(row=row, column=6, value=f"{link['similarity_score']:.2%}")
+                    row += 1
+            
+            # Ajuster la largeur des colonnes
+            for column in ws.columns:
+                max_length = 0
+                column_letter = column[0].column_letter
+                for cell in column:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                adjusted_width = min(max_length + 2, 50)
+                ws.column_dimensions[column_letter].width = adjusted_width
+            
+            wb.save(excel_path)
+            self.logger.info(f"Fichier Excel créé: {excel_path}")
+            
+        except ImportError:
+            self.logger.warning("openpyxl non installé, fichier Excel non créé")
+        except Exception as e:
+            self.logger.warning(f"Erreur lors de la création du fichier Excel: {str(e)}")
         
         # HTML
         html_path = output_path / f"{base_name}.html"
@@ -1185,7 +1301,19 @@ class InternalLinkingOptimizer:
             
             for link in data['recommended_links']:
                 score_pct = link['similarity_score'] * 100
-                html += f"""
+                
+                # Vérifier si l'ancre a été réécrite
+                if 'anchor_rewritten' in link and link['anchor_rewritten']:
+                    html += f"""
+            <div class="link-item">
+                <span class="similarity-score">{score_pct:.1f}%</span>
+                <div class="anchor-text">→ {link['anchor_text']}</div>
+                <div style="font-size: 0.85em; color: #28a745; font-style: italic;">✏️ IA: {link['anchor_rewritten']}</div>
+                <div style="font-size: 0.85em; color: #666;">{link['target_url']}</div>
+            </div>
+"""
+                else:
+                    html += f"""
             <div class="link-item">
                 <span class="similarity-score">{score_pct:.1f}%</span>
                 <div class="anchor-text">→ {link['anchor_text']}</div>
@@ -1205,6 +1333,103 @@ class InternalLinkingOptimizer:
         
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(html)
+
+    def rewrite_anchors_with_ai(self, recommendations: dict) -> dict:
+        """Réécrit les ancres des recommandations avec l'IA pour les rendre plus naturelles."""
+        if not hasattr(self, 'anchor_rewrite_config'):
+            self.logger.warning("Configuration de réécriture des ancres non trouvée")
+            return recommendations
+        
+        config = self.anchor_rewrite_config
+        self.logger.info(f"Réécriture des ancres avec le modèle {config['model']}")
+        
+        # Compter le nombre total d'ancres à réécrire
+        total_anchors = sum(len(data['recommended_links']) for data in recommendations.values())
+        processed_anchors = 0
+        
+        for source_url, data in recommendations.items():
+            if 'recommended_links' not in data:
+                continue
+                
+            for link_data in data['recommended_links']:
+                original_anchor = link_data.get('anchor', '')
+                if not original_anchor:
+                    continue
+                
+                try:
+                    # Réécrire l'ancre avec l'IA
+                    rewritten_anchor = self._rewrite_single_anchor(original_anchor, config)
+                    
+                    if rewritten_anchor:
+                        # Ajouter l'ancre réécrite
+                        link_data['anchor_rewritten'] = rewritten_anchor
+                        processed_anchors += 1
+                        
+                        # Log de progression
+                        if processed_anchors % 10 == 0:
+                            self.logger.info(f"Ancres réécrites: {processed_anchors}/{total_anchors}")
+                    
+                except Exception as e:
+                    self.logger.warning(f"Erreur lors de la réécriture de l'ancre '{original_anchor}': {str(e)}")
+                    # Garder l'ancre originale en cas d'erreur
+                    link_data['anchor_rewritten'] = original_anchor
+        
+        self.logger.info(f"Réécriture terminée: {processed_anchors}/{total_anchors} ancres traitées")
+        return recommendations
+    
+    def _rewrite_single_anchor(self, original_anchor: str, config: dict) -> str:
+        """Réécrit une seule ancre avec l'IA."""
+        try:
+            # Préparer le prompt
+            prompt = config['prompt'].format(anchor=original_anchor)
+            
+            # Appel à l'API OpenAI
+            response = self.client.chat.completions.create(
+                model=config['model'],
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "Tu es un expert en SEO et rédaction web. Tu réécris des ancres de liens pour les rendre plus naturelles et engageantes."
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                temperature=config['temperature'],
+                max_tokens=50,  # Limiter la longueur de la réponse
+                timeout=30
+            )
+            
+            # Extraire la réponse
+            if response.choices and response.choices[0].message.content:
+                rewritten_anchor = response.choices[0].message.content.strip()
+                
+                # Nettoyer la réponse (enlever les guillemets, etc.)
+                rewritten_anchor = rewritten_anchor.strip('"\'')
+                
+                # Vérifier que la réponse n'est pas vide
+                if rewritten_anchor and len(rewritten_anchor) > 2:
+                    return rewritten_anchor
+                else:
+                    self.logger.warning(f"Réponse IA vide pour l'ancre '{original_anchor}'")
+                    return original_anchor
+            else:
+                self.logger.warning(f"Pas de réponse IA pour l'ancre '{original_anchor}'")
+                return original_anchor
+                
+        except openai.RateLimitError:
+            self.logger.warning(f"Rate limit lors de la réécriture de l'ancre '{original_anchor}'")
+            time.sleep(2)  # Pause courte
+            return original_anchor
+            
+        except openai.APIError as e:
+            self.logger.warning(f"Erreur API lors de la réécriture de l'ancre '{original_anchor}': {str(e)}")
+            return original_anchor
+            
+        except Exception as e:
+            self.logger.warning(f"Erreur lors de la réécriture de l'ancre '{original_anchor}': {str(e)}")
+            return original_anchor
 
     def test_openai_connection(self) -> bool:
         """Teste la connexion OpenAI avant de commencer l'analyse."""
