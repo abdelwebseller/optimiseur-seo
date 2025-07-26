@@ -645,6 +645,10 @@ class InternalLinkingOptimizer:
 
     def process_urls(self, urls: List[str], dimensions: int = None):
         """Traite une liste d'URLs."""
+        return self.process_urls_with_progress(urls, dimensions=dimensions)
+    
+    def process_urls_with_progress(self, urls: List[str], dimensions: int = None, progress_callback=None):
+        """Traite une liste d'URLs avec progression."""
         self.logger.info(f"Traitement de {len(urls)} URLs...")
         
         # Import pandas pour le DataFrame
@@ -661,6 +665,11 @@ class InternalLinkingOptimizer:
         # Extraction du contenu
         for i, url in enumerate(urls, 1):
             self.logger.info(f"[{i}/{len(urls)}] Extraction: {url}")
+            
+            # Mettre à jour la progression
+            if progress_callback:
+                progress_percent = 10 + int((i / len(urls)) * 70)  # 10% à 80%
+                progress_callback(progress_percent, 100, f"Traitement des pages ({i}/{len(urls)})")
             
             content = self.extract_page_content(url)
             if content:
