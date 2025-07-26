@@ -25,25 +25,20 @@ COPY . .
 # Créer les dossiers nécessaires
 RUN mkdir -p logs output
 
-# Créer un utilisateur non-root pour la sécurité
-RUN useradd -m -u 1000 streamlit && \
-    chown -R streamlit:streamlit /app
-USER streamlit
-
 # Exposer le port Streamlit
 EXPOSE 8501
 
-# Variables d'environnement
-ENV PYTHONPATH=/app
+# Variables d'environnement pour Streamlit
 ENV STREAMLIT_SERVER_PORT=8501
 ENV STREAMLIT_SERVER_ADDRESS=0.0.0.0
 ENV STREAMLIT_SERVER_HEADLESS=true
 ENV STREAMLIT_SERVER_ENABLE_CORS=true
 ENV STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION=false
+ENV STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+# Health check simplifié
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD curl -f http://localhost:8501/_stcore/health || exit 1
 
-# Commande de démarrage
-CMD ["streamlit", "run", "test_app.py", "--server.port=8501", "--server.address=0.0.0.0"] 
+# Commande de démarrage simplifiée
+CMD ["streamlit", "run", "app.py"] 
