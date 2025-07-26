@@ -131,7 +131,7 @@ class WebSEOOptimizer:
             return False
     
     def log_message(self, message, level="INFO"):
-        """Ajoute un message au log."""
+        """Ajoute un message au log avec mise à jour en temps réel."""
         timestamp = datetime.now().strftime("%H:%M:%S")
         icon = "ℹ️" if level == "INFO" else "⚠️" if level == "WARNING" else "❌" if level == "ERROR" else "✅"
         log_entry = f"[{timestamp}] {icon} {message}"
@@ -142,20 +142,31 @@ class WebSEOOptimizer:
             st.session_state.logs = st.session_state.logs[-100:]
     
     def update_progress(self, current, total, step=""):
-        """Met à jour la progression."""
+        """Met à jour la progression avec mise à jour en temps réel."""
         if total > 0:
             st.session_state.progress = int((current / total) * 100)
         st.session_state.current_step = step
-    
-    def diagnose_errors(self):
-        """Diagnostique les erreurs courantes avec test d'authentification OpenAI."""
+        
+    def diagnose_errors_detailed(self):
+        """Diagnostique détaillé des erreurs avec informations techniques."""
         errors = []
+        error_details = {}
         
         # Vérifier la clé API
         if not st.session_state.api_key:
             errors.append("❌ Clé API OpenAI manquante")
+            error_details["Clé API manquante"] = {
+                "description": "Aucune clé API n'a été fournie",
+                "solution": "Ajoutez votre clé API OpenAI dans la sidebar",
+                "code": "NO_API_KEY"
+            }
         elif not st.session_state.api_key.startswith("sk-"):
             errors.append("❌ Format de clé API invalide")
+            error_details["Format de clé invalide"] = {
+                "description": f"La clé API fournie ne commence pas par 'sk-' : {st.session_state.api_key[:10]}...",
+                "solution": "Vérifiez que vous avez copié la clé API complète depuis OpenAI",
+                "code": "INVALID_API_KEY_FORMAT"
+            }
         else:
             # Tester l'authentification OpenAI avec un petit embedding
             try:
@@ -173,24 +184,82 @@ class WebSEOOptimizer:
                     pass
                 else:
                     errors.append("⚠️ Problème de connexion à OpenAI")
+                    error_details["Réponse OpenAI invalide"] = {
+                        "description": "OpenAI a répondu mais la réponse est vide ou invalide",
+                        "solution": "Vérifiez votre quota OpenAI et réessayez",
+                        "code": "INVALID_OPENAI_RESPONSE",
+                        "response": str(response) if response else "Aucune réponse"
+                    }
                     
-            except openai.AuthenticationError:
+            except openai.AuthenticationError as e:
                 errors.append("❌ Clé API OpenAI invalide ou expirée")
-            except openai.RateLimitError:
+                error_details["Erreur d'authentification"] = {
+                    "description": f"OpenAI a rejeté la clé API : {str(e)}",
+                    "solution": "Vérifiez que votre clé API est valide et non expirée",
+                    "code": "AUTHENTICATION_ERROR",
+                    "error": str(e)
+                }
+            except openai.RateLimitError as e:
                 errors.append("⚠️ Rate limit OpenAI atteint - Attendez quelques minutes")
+                error_details["Rate limit atteint"] = {
+                    "description": f"Limite de requêtes OpenAI atteinte : {str(e)}",
+                    "solution": "Attendez quelques minutes avant de réessayer",
+                    "code": "RATE_LIMIT_ERROR",
+                    "error": str(e)
+                }
             except openai.APIError as e:
                 errors.append(f"⚠️ Erreur API OpenAI: {str(e)}")
+                error_details["Erreur API OpenAI"] = {
+                    "description": f"Erreur de l'API OpenAI : {str(e)}",
+                    "solution": "Vérifiez le statut d'OpenAI et réessayez",
+                    "code": "API_ERROR",
+                    "error": str(e)
+                }
             except Exception as e:
                 errors.append(f"⚠️ Problème de connexion à OpenAI: {str(e)}")
+                error_details["Erreur de connexion"] = {
+                    "description": f"Erreur inattendue lors de la connexion à OpenAI : {str(e)}",
+                    "solution": "Vérifiez votre connexion internet et réessayez",
+                    "code": "CONNECTION_ERROR",
+                    "error": str(e),
+                    "type": type(e).__name__
+                }
         
         # Vérifier la connexion internet
         try:
             import requests
-            response = requests.get("https://api.openai.com", timeout=10)  # Timeout augmenté
+            response = requests.get("https://api.openai.com", timeout=10)
             if response.status_code != 200:
                 errors.append("⚠️ Problème de connexion réseau à OpenAI")
-        except:
+                error_details["Problème réseau"] = {
+                    "description": f"Impossible d'atteindre api.openai.com (HTTP {response.status_code})",
+                    "solution": "Vérifiez votre connexion internet et les pare-feu",
+                    "code": "NETWORK_ERROR",
+                    "status_code": response.status_code,
+                    "response_text": response.text[:200]
+                }
+        except requests.exceptions.Timeout:
+            errors.append("❌ Timeout de connexion à OpenAI")
+            error_details["Timeout réseau"] = {
+                "description": "La connexion à api.openai.com a expiré (timeout 10s)",
+                "solution": "Vérifiez votre connexion internet ou utilisez un VPN",
+                "code": "NETWORK_TIMEOUT"
+            }
+        except requests.exceptions.ConnectionError:
             errors.append("❌ Pas de connexion internet")
+            error_details["Pas de connexion"] = {
+                "description": "Impossible de se connecter à internet",
+                "solution": "Vérifiez votre connexion internet",
+                "code": "NO_INTERNET"
+            }
+        except Exception as e:
+            errors.append(f"❌ Erreur réseau : {str(e)}")
+            error_details["Erreur réseau"] = {
+                "description": f"Erreur lors du test de connexion : {str(e)}",
+                "solution": "Vérifiez votre connexion internet",
+                "code": "NETWORK_ERROR",
+                "error": str(e)
+            }
         
         # Vérifier les ressources système
         try:
@@ -198,9 +267,23 @@ class WebSEOOptimizer:
             memory = psutil.virtual_memory()
             if memory.percent > 90:
                 errors.append("⚠️ Mémoire système faible")
-        except:
+                error_details["Mémoire faible"] = {
+                    "description": f"Utilisation mémoire : {memory.percent}% ({memory.used // (1024**3)}GB / {memory.total // (1024**3)}GB)",
+                    "solution": "Fermez d'autres applications ou redémarrez",
+                    "code": "LOW_MEMORY",
+                    "memory_percent": memory.percent,
+                    "memory_used_gb": memory.used // (1024**3),
+                    "memory_total_gb": memory.total // (1024**3)
+                }
+        except Exception as e:
+            # Ne pas bloquer si psutil échoue
             pass
         
+        return errors, error_details
+    
+    def diagnose_errors(self):
+        """Diagnostique simple pour la compatibilité."""
+        errors, _ = self.diagnose_errors_detailed()
         return errors
     
     def run_analysis(self, sitemap_url, min_similarity, max_links, embedding_model, use_reduced_dimensions, 
@@ -609,13 +692,65 @@ Ancre réécrite :"""
             
             # Bouton de diagnostic
             if st.button("🔍 Diagnostiquer les problèmes", type="secondary"):
-                errors = app.diagnose_errors()
+                errors, error_details = app.diagnose_errors_detailed()
                 if errors:
-                    st.error("Problèmes détectés:")
+                    st.error("🚨 Problèmes détectés")
+                    
+                    # Afficher les erreurs principales
                     for error in errors:
                         st.write(f"• {error}")
+                    
+                    # Accordéon avec détails techniques
+                    with st.expander("🔧 Détails techniques et solutions", expanded=True):
+                        st.markdown("### 📋 Diagnostic détaillé")
+                        
+                        for error_name, details in error_details.items():
+                            st.markdown(f"#### {error_name}")
+                            
+                            # Créer une card pour chaque erreur
+                            st.markdown(f"""
+                            <div style="
+                                background: #f8f9fa; 
+                                border-left: 4px solid #dc3545; 
+                                padding: 15px; 
+                                margin: 10px 0; 
+                                border-radius: 5px;
+                                font-family: 'Courier New', monospace;
+                            ">
+                                <strong>Description :</strong> {details['description']}<br>
+                                <strong>Solution :</strong> {details['solution']}<br>
+                                <strong>Code d'erreur :</strong> <code>{details.get('code', 'N/A')}</code>
+                            </div>
+                            """, unsafe_allow_html=True)
+                            
+                            # Afficher les détails techniques si disponibles
+                            if 'error' in details:
+                                st.markdown("**Erreur technique :**")
+                                st.code(details['error'], language="text")
+                            
+                            if 'status_code' in details:
+                                st.markdown(f"**Code de statut HTTP :** {details['status_code']}")
+                            
+                            if 'response_text' in details:
+                                st.markdown("**Réponse du serveur :**")
+                                st.code(details['response_text'], language="text")
+                            
+                            if 'memory_percent' in details:
+                                st.markdown(f"**Utilisation mémoire :** {details['memory_percent']}%")
+                            
+                            st.markdown("---")
+                        
+                        # Section de conseils généraux
+                        st.markdown("### 💡 Conseils généraux")
+                        st.markdown("""
+                        - **Vérifiez votre connexion internet**
+                        - **Assurez-vous que votre clé API OpenAI est valide**
+                        - **Vérifiez votre quota OpenAI**
+                        - **Redémarrez l'application si nécessaire**
+                        """)
+                        
                 else:
-                    st.success("✅ Aucun problème détecté")
+                    st.success("✅ Aucun problème détecté - Votre configuration est correcte !")
             
             # Bouton de lancement
             if st.button("🚀 Lancer l'analyse", type="primary", disabled=app.analysis_running):
@@ -781,27 +916,113 @@ Ancre réécrite :"""
         with col2:
             st.header("📝 Logs d'exécution")
             
-            # Affichage des logs avec style amélioré
+            # Affichage des logs avec style moderne
             if st.session_state.logs:
-                # Créer un conteneur pour les logs avec style
+                # Créer un conteneur pour les logs avec style moderne
                 log_container = st.container()
                 with log_container:
-                    for log_entry in st.session_state.logs[-20:]:  # Afficher les 20 derniers logs
+                    # Afficher les 30 derniers logs avec design moderne
+                    for log_entry in st.session_state.logs[-30:]:
+                        # Extraire le timestamp et le message
+                        if "[" in log_entry and "]" in log_entry:
+                            timestamp = log_entry[log_entry.find("["):log_entry.find("]")+1]
+                            message = log_entry[log_entry.find("]")+2:]
+                        else:
+                            timestamp = ""
+                            message = log_entry
+                        
                         # Détecter le type de log par l'icône
                         if "✅" in log_entry:
-                            st.success(log_entry)
+                            st.markdown(f"""
+                            <div style="
+                                background: #d4edda; 
+                                border: 1px solid #c3e6cb; 
+                                border-radius: 5px; 
+                                padding: 10px; 
+                                margin: 5px 0;
+                                font-family: 'Courier New', monospace;
+                                font-size: 12px;
+                            ">
+                                <span style="color: #155724; font-weight: bold;">{timestamp}</span>
+                                <span style="color: #155724;">{message}</span>
+                            </div>
+                            """, unsafe_allow_html=True)
                         elif "❌" in log_entry:
-                            st.error(log_entry)
+                            st.markdown(f"""
+                            <div style="
+                                background: #f8d7da; 
+                                border: 1px solid #f5c6cb; 
+                                border-radius: 5px; 
+                                padding: 10px; 
+                                margin: 5px 0;
+                                font-family: 'Courier New', monospace;
+                                font-size: 12px;
+                            ">
+                                <span style="color: #721c24; font-weight: bold;">{timestamp}</span>
+                                <span style="color: #721c24;">{message}</span>
+                            </div>
+                            """, unsafe_allow_html=True)
                         elif "⚠️" in log_entry:
-                            st.warning(log_entry)
+                            st.markdown(f"""
+                            <div style="
+                                background: #fff3cd; 
+                                border: 1px solid #ffeaa7; 
+                                border-radius: 5px; 
+                                padding: 10px; 
+                                margin: 5px 0;
+                                font-family: 'Courier New', monospace;
+                                font-size: 12px;
+                            ">
+                                <span style="color: #856404; font-weight: bold;">{timestamp}</span>
+                                <span style="color: #856404;">{message}</span>
+                            </div>
+                            """, unsafe_allow_html=True)
                         else:
-                            st.info(log_entry)
+                            st.markdown(f"""
+                            <div style="
+                                background: #d1ecf1; 
+                                border: 1px solid #bee5eb; 
+                                border-radius: 5px; 
+                                padding: 10px; 
+                                margin: 5px 0;
+                                font-family: 'Courier New', monospace;
+                                font-size: 12px;
+                            ">
+                                <span style="color: #0c5460; font-weight: bold;">{timestamp}</span>
+                                <span style="color: #0c5460;">{message}</span>
+                            </div>
+                            """, unsafe_allow_html=True)
+                
+                # Statistiques des logs
+                total_logs = len(st.session_state.logs)
+                error_logs = len([log for log in st.session_state.logs if "❌" in log])
+                warning_logs = len([log for log in st.session_state.logs if "⚠️" in log])
+                success_logs = len([log for log in st.session_state.logs if "✅" in log])
+                
+                st.markdown("### 📊 Statistiques des logs")
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Total", total_logs)
+                with col2:
+                    st.metric("Erreurs", error_logs, delta=None)
+                with col3:
+                    st.metric("Avertissements", warning_logs, delta=None)
+                with col4:
+                    st.metric("Succès", success_logs, delta=None)
+                
             else:
                 st.info("📋 Aucun log disponible - Lancez une analyse pour voir les logs")
             
-            # Bouton de rafraîchissement
-            if st.button("🔄 Rafraîchir les logs"):
-                st.rerun()
+            # Boutons d'action pour les logs
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("🔄 Rafraîchir les logs", type="secondary"):
+                    st.rerun()
+            
+            with col2:
+                if st.button("🗑️ Vider les logs", type="secondary"):
+                    st.session_state.logs = []
+                    st.rerun()
     
     elif selected_page == "📊 Mes Projets":
         st.header("📊 Mes Projets")
