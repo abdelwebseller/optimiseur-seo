@@ -598,61 +598,7 @@ def main():
                     help="Auto: détection automatique, Rapide: parallélisation maximale, Standard: équilibré, Prudent: séquentiel"
                 )
         
-        # Configuration de réécriture des ancres
-        st.header("✍️ Réécriture des ancres")
-        
-        optimize_anchors = st.checkbox(
-            "Rédaction des ancres optimisée avec l'IA",
-            value=False,
-            help="Réécrire les ancres générées pour les rendre plus naturelles et engageantes"
-        )
-        
-        # Initialiser les variables avec des valeurs par défaut
-        anchor_rewrite_model = "gpt-4o-mini"
-        anchor_rewrite_temperature = 0.7
-        anchor_rewrite_prompt = """Réécris cette ancre de lien pour qu'elle soit plus naturelle et engageante, tout en conservant les mots-clés importants. 
 
-Règles à suivre :
-- Garde tous les mots-clés techniques et spécifiques
-- Ajoute des mots de liaison naturels
-- Rends le texte plus fluide et lisible
-- Évite les répétitions
-- Utilise un ton professionnel mais accessible
-- Longueur : 3-8 mots maximum
-
-Ancre originale : {anchor}
-
-Ancre réécrite :"""
-        
-        if optimize_anchors:
-            with st.expander("🔧 Configuration de réécriture"):
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    anchor_rewrite_model = st.selectbox(
-                        "Modèle d'IA pour réécriture",
-                        ["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"],
-                        index=0,
-                        help="Modèle OpenAI pour réécrire les ancres"
-                    )
-                
-                with col2:
-                    anchor_rewrite_temperature = st.slider(
-                        "Créativité",
-                        min_value=0.0,
-                        max_value=1.0,
-                        value=0.7,
-                        step=0.1,
-                        help="Niveau de créativité pour la réécriture (0 = très conservateur, 1 = très créatif)"
-                    )
-                
-                # Prompt personnalisé
-                anchor_rewrite_prompt = st.text_area(
-                    "Prompt personnalisé",
-                    value=anchor_rewrite_prompt,
-                    height=150,
-                    help="Prompt personnalisé pour la réécriture des ancres. Utilisez {anchor} pour référencer l'ancre originale."
-                )
     
     # Contenu principal selon la page sélectionnée
     if selected_page == "🏠 Accueil":
@@ -754,6 +700,62 @@ Ancre réécrite :"""
                         
                 else:
                     st.success("✅ Aucun problème détecté - Votre configuration est correcte !")
+            
+            # Configuration de réécriture des ancres (déplacée de la sidebar)
+            st.subheader("✍️ Réécriture des ancres")
+            
+            optimize_anchors = st.checkbox(
+                "Rédaction des ancres optimisée avec l'IA",
+                value=False,
+                help="Réécrire les ancres générées pour les rendre plus naturelles et engageantes"
+            )
+            
+            # Initialiser les variables avec des valeurs par défaut
+            anchor_rewrite_model = "gpt-4o-mini"
+            anchor_rewrite_temperature = 0.7
+            anchor_rewrite_prompt = """Réécris cette ancre de lien pour qu'elle soit plus naturelle et engageante, tout en conservant les mots-clés importants. 
+
+Règles à suivre :
+- Garde tous les mots-clés techniques et spécifiques
+- Ajoute des mots de liaison naturels
+- Rends le texte plus fluide et lisible
+- Évite les répétitions
+- Utilise un ton professionnel mais accessible
+- Longueur : 3-8 mots maximum
+
+Ancre originale : {anchor}
+
+Ancre réécrite :"""
+            
+            if optimize_anchors:
+                with st.expander("🔧 Configuration de réécriture", expanded=True):
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        anchor_rewrite_model = st.selectbox(
+                            "Modèle d'IA pour réécriture",
+                            ["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"],
+                            index=0,
+                            help="Modèle OpenAI pour réécrire les ancres"
+                        )
+                    
+                    with col2:
+                        anchor_rewrite_temperature = st.slider(
+                            "Créativité",
+                            min_value=0.0,
+                            max_value=1.0,
+                            value=0.7,
+                            step=0.1,
+                            help="Niveau de créativité pour la réécriture (0 = très conservateur, 1 = très créatif)"
+                        )
+                    
+                    # Prompt personnalisé
+                    anchor_rewrite_prompt = st.text_area(
+                        "Prompt personnalisé",
+                        value=anchor_rewrite_prompt,
+                        height=150,
+                        help="Prompt personnalisé pour la réécriture des ancres. Utilisez {anchor} pour référencer l'ancre originale."
+                    )
             
             # Bouton de lancement
             if st.button("🚀 Lancer l'analyse", type="primary", disabled=app.analysis_running):
