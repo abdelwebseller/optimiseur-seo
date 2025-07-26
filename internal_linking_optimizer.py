@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Optimiseur de maillage interne SEO - Version corrigée
+Optimiseur de maillage interne SEO - Version optimisée avec parallélisation
 """
 
 import os
@@ -20,13 +20,20 @@ import re
 from collections import defaultdict
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Callable
 import argparse
 import warnings
+import asyncio
+import aiohttp
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import psutil
+from tqdm import tqdm
 warnings.filterwarnings('ignore')
 
 class InternalLinkingOptimizer:
-    def __init__(self, api_key: str, model: str = "text-embedding-3-small"):
+    def __init__(self, api_key: str, model: str = "text-embedding-3-small", 
+                 max_concurrent_requests: int = 10, max_concurrent_embeddings: int = 5,
+                 batch_size: int = 50, memory_limit_mb: int = 2048):
         self.api_key = api_key
         self.model = model
         self.dimensions = None  # Sera défini dans process_urls si nécessaire
@@ -36,6 +43,14 @@ class InternalLinkingOptimizer:
         self.timeout = 30
         self.max_retries = 3  # Nombre de tentatives pour les requêtes
         self.retry_delay = 2  # Délai entre les tentatives en secondes
+        
+        # Paramètres de parallélisation
+        self.max_concurrent_requests = max_concurrent_requests
+        self.max_concurrent_embeddings = max_concurrent_embeddings
+        self.batch_size = batch_size
+        self.memory_limit_mb = memory_limit_mb
+        
+        # Données de traitement
         self.pages_data = {}
         self.embeddings = {}
         self.failed_urls = []
@@ -246,6 +261,138 @@ class InternalLinkingOptimizer:
         
         return None
 
+    async def extract_page_content_async(self, session: aiohttp.ClientSession, url: str) -> Tuple[str, Optional[dict]]:
+        """Extrait le contenu d'une page de manière asynchrone."""
+        # Vérifier que ce n'est pas une image
+        image_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg', '.ico', '.tiff'}
+        if any(url.lower().endswith(ext) for ext in image_extensions):
+            return url, None
+            
+        for attempt in range(self.max_retries):
+            try:
+                async with session.get(url, headers=self.headers, timeout=aiohttp.ClientTimeout(total=self.timeout)) as response:
+                    if response.status == 200:
+                        html = await response.text()
+                        soup = BeautifulSoup(html, 'html.parser')
+                        
+                        # Extraire le titre depuis l'URL si nécessaire
+                        url_slug = url.split('/')[-1]
+                        url_title = url_slug.replace('-', ' ').title()
+                        
+                        # STRATEGIE 1: Chercher le contenu de l'article spécifiquement
+                        article_content = None
+                        
+                        # Sélecteurs WordPress courants pour le contenu principal
+                        selectors = [
+                            'article .entry-content',
+                            'article .post-content',
+                            'div.entry-content',
+                            'div.post-content',
+                            'main article .entry-content',
+                            'main article .post-content',
+                            'div.content-area article .entry-content',
+                            '#content article .entry-content',
+                            'article[itemtype*="Article"] .entry-content',
+                            'article[itemtype*="BlogPosting"] .entry-content',
+                            '.post-content',
+                            '.article-content',
+                            '.content-wrapper article',
+                            'main .content',
+                            '.post .entry-content',
+                        ]
+                        
+                        # Essayer les sélecteurs spécifiques
+                        for selector in selectors:
+                            content_elem = soup.select_one(selector)
+                            if content_elem:
+                                article_content = content_elem.get_text(strip=True)
+                                break
+                        
+                        # STRATEGIE 2: Si pas trouvé, chercher le contenu principal
+                        if not article_content:
+                            main_selectors = [
+                                'main',
+                                'article',
+                                '.content',
+                                '.main-content',
+                                '#content',
+                                '.post',
+                                '.entry'
+                            ]
+                            
+                            for selector in main_selectors:
+                                main_elem = soup.select_one(selector)
+                                if main_elem:
+                                    # Exclure les éléments de navigation et sidebar
+                                    for elem in main_elem.find_all(['nav', 'aside', '.sidebar', '.navigation', 'header', 'footer']):
+                                        elem.decompose()
+                                    article_content = main_elem.get_text(strip=True)
+                                    break
+                        
+                        # STRATEGIE 3: Dernier recours - tout le body
+                        if not article_content:
+                            body = soup.find('body')
+                            if body:
+                                # Nettoyer le body
+                                for elem in body.find_all(['nav', 'aside', '.sidebar', '.navigation', 'header', 'footer', 'script', 'style']):
+                                    elem.decompose()
+                                article_content = body.get_text(strip=True)
+                        
+                        # Extraire le titre
+                        title = ""
+                        title_elem = soup.find('title')
+                        if title_elem:
+                            title = title_elem.get_text(strip=True)
+                        elif soup.find('h1'):
+                            title = soup.find('h1').get_text(strip=True)
+                        else:
+                            title = url_title
+                        
+                        # Nettoyer et limiter le contenu
+                        if article_content:
+                            # Supprimer les espaces multiples
+                            article_content = re.sub(r'\s+', ' ', article_content)
+                            # Limiter à 8000 caractères pour les embeddings
+                            article_content = article_content[:8000]
+                            
+                            # Compter les mots
+                            word_count = len(article_content.split())
+                            
+                            # Combiner titre et contenu pour l'embedding
+                            combined = f"{title}\n\n{article_content}"
+                            
+                            return url, {
+                                'title': title,
+                                'content': article_content,
+                                'combined': combined,
+                                'word_count': word_count
+                            }
+                        
+                        return url, None
+                        
+                    else:
+                        self.logger.warning(f"HTTP {response.status} pour {url}")
+                        if attempt < self.max_retries - 1:
+                            await asyncio.sleep(self.retry_delay)
+                            continue
+                        return url, None
+                        
+            except asyncio.TimeoutError:
+                self.logger.warning(f"Timeout pour {url} (tentative {attempt + 1}/{self.max_retries})")
+                if attempt < self.max_retries - 1:
+                    await asyncio.sleep(self.retry_delay)
+                    continue
+                return url, None
+                
+            except Exception as e:
+                self.logger.error(f"Erreur pour {url}: {str(e)}")
+                if attempt < self.max_retries - 1:
+                    await asyncio.sleep(self.retry_delay)
+                    continue
+                return url, None
+        
+        return url, None
+
     def get_embedding(self, text: str) -> List[float]:
         """Obtient l'embedding pour un texte."""
         # Tentatives multiples avec retry pour les erreurs OpenAI
@@ -291,6 +438,25 @@ class InternalLinkingOptimizer:
                 return None
         
         return None
+
+    def get_embedding_batch(self, texts: List[str]) -> List[Optional[List[float]]]:
+        """Obtient les embeddings pour une liste de textes en parallèle."""
+        embeddings = []
+        
+        with ThreadPoolExecutor(max_workers=self.max_concurrent_embeddings) as executor:
+            # Soumettre toutes les tâches
+            future_to_text = {executor.submit(self.get_embedding, text): text for text in texts}
+            
+            # Collecter les résultats
+            for future in as_completed(future_to_text):
+                try:
+                    embedding = future.result()
+                    embeddings.append(embedding)
+                except Exception as e:
+                    self.logger.error(f"Erreur embedding: {str(e)}")
+                    embeddings.append(None)
+        
+        return embeddings
 
     def calculate_similarity_matrix(self):
         """Calcule la matrice de similarité entre toutes les pages."""
@@ -656,20 +822,142 @@ class InternalLinkingOptimizer:
         """Traite une liste d'URLs."""
         return self.process_urls_with_progress(urls, dimensions=dimensions)
     
-    def process_urls_with_progress(self, urls: List[str], dimensions: int = None, progress_callback=None):
-        """Traite une liste d'URLs avec progression."""
-        self.logger.info(f"Traitement de {len(urls)} URLs...")
-        
-        # Import pandas pour le DataFrame
+    async def process_urls_async(self, urls: List[str], dimensions: int = None, progress_callback=None) -> 'pd.DataFrame':
+        """Traite une liste d'URLs de manière asynchrone avec parallélisation."""
         import pandas as pd
         
-        # Listes pour créer le DataFrame
-        processed_data = []
+        self.logger.info(f"Traitement asynchrone de {len(urls)} URLs...")
+        
+        # Vérifier la mémoire
+        memory_info = self.check_memory_usage()
+        self.logger.info(f"Mémoire disponible: {memory_info.get('available_mb', 'N/A')} MB")
+        
+        # Estimer le temps de traitement
+        time_estimate = self.estimate_processing_time(len(urls))
+        self.logger.info(f"Temps estimé: {time_estimate['formatted']}")
+        
+        # Si dimensions est spécifié, le stocker
+        self.dimensions = dimensions
+        if dimensions:
+            self.logger.info(f"Utilisation du modèle {self.model} avec dimensions réduites: {dimensions}")
+        
+        # Traitement par batch
+        all_processed_data = []
+        total_batches = (len(urls) + self.batch_size - 1) // self.batch_size
+        
+        for batch_num in range(total_batches):
+            start_idx = batch_num * self.batch_size
+            end_idx = min(start_idx + self.batch_size, len(urls))
+            batch_urls = urls[start_idx:end_idx]
+            
+            self.logger.info(f"Traitement du batch {batch_num + 1}/{total_batches} ({len(batch_urls)} URLs)")
+            
+            # Mettre à jour la progression
+            if progress_callback:
+                progress_percent = 10 + int((batch_num / total_batches) * 70)
+                progress_callback(progress_percent, 100, f"Batch {batch_num + 1}/{total_batches}")
+            
+            # Extraction asynchrone du contenu
+            async with aiohttp.ClientSession(
+                connector=aiohttp.TCPConnector(limit=self.max_concurrent_requests),
+                timeout=aiohttp.ClientTimeout(total=self.timeout)
+            ) as session:
+                # Créer les tâches d'extraction
+                tasks = [self.extract_page_content_async(session, url) for url in batch_urls]
+                
+                # Exécuter en parallèle
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                
+                # Traiter les résultats
+                batch_data = []
+                texts_for_embedding = []
+                urls_for_embedding = []
+                
+                for i, result in enumerate(results):
+                    if isinstance(result, Exception):
+                        self.logger.error(f"Erreur extraction {batch_urls[i]}: {str(result)}")
+                        self.failed_urls.append(batch_urls[i])
+                        continue
+                    
+                    url, content = result
+                    if content:
+                        self.pages_data[url] = content
+                        texts_for_embedding.append(content['combined'])
+                        urls_for_embedding.append(url)
+                        batch_data.append({
+                            'url': url,
+                            'title': content.get('title', ''),
+                            'content': content.get('content', '')[:500],
+                            'word_count': content.get('word_count', 0)
+                        })
+                    else:
+                        self.failed_urls.append(url)
+                
+                # Obtenir les embeddings en parallèle
+                if texts_for_embedding:
+                    self.logger.info(f"Génération des embeddings pour {len(texts_for_embedding)} pages...")
+                    embeddings = self.get_embedding_batch(texts_for_embedding)
+                    
+                    # Associer les embeddings aux URLs
+                    for i, (url, embedding) in enumerate(zip(urls_for_embedding, embeddings)):
+                        if embedding:
+                            self.embeddings[url] = embedding
+                            batch_data[i]['embedding'] = embedding
+                        else:
+                            self.failed_urls.append(url)
+                            batch_data[i]['embedding'] = None
+                
+                all_processed_data.extend(batch_data)
+                
+                # Pause entre les batches pour éviter la surcharge
+                if batch_num < total_batches - 1:
+                    await asyncio.sleep(2)
+        
+        self.logger.info(f"Pages traitées: {len(self.pages_data)}")
+        self.logger.info(f"Échecs: {len(self.failed_urls)}")
+        
+        # Créer et retourner le DataFrame
+        if all_processed_data:
+            df = pd.DataFrame(all_processed_data)
+            return df
+        else:
+            return pd.DataFrame()
+    
+    def process_urls_with_progress(self, urls: List[str], dimensions: int = None, progress_callback=None):
+        """Wrapper synchrone pour la méthode asynchrone."""
+        # Vérifier si on peut utiliser la version asynchrone
+        if len(urls) > 10:  # Utiliser l'async pour les gros volumes
+            try:
+                # Créer un nouvel event loop si nécessaire
+                try:
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                
+                return loop.run_until_complete(
+                    self.process_urls_async(urls, dimensions, progress_callback)
+                )
+            except Exception as e:
+                self.logger.warning(f"Échec de la version asynchrone, utilisation de la version synchrone: {e}")
+                return self._process_urls_sync(urls, dimensions, progress_callback)
+        else:
+            # Utiliser la version synchrone pour les petits volumes
+            return self._process_urls_sync(urls, dimensions, progress_callback)
+    
+    def _process_urls_sync(self, urls: List[str], dimensions: int = None, progress_callback=None):
+        """Version synchrone originale pour les petits volumes."""
+        import pandas as pd
+        
+        self.logger.info(f"Traitement synchrone de {len(urls)} URLs...")
         
         # Si dimensions est spécifié, le stocker séparément
         self.dimensions = dimensions
         if dimensions:
             self.logger.info(f"Utilisation du modèle {self.model} avec dimensions réduites: {dimensions}")
+        
+        # Listes pour créer le DataFrame
+        processed_data = []
         
         # Extraction du contenu
         for i, url in enumerate(urls, 1):
@@ -868,6 +1156,56 @@ class InternalLinkingOptimizer:
         
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(html)
+
+    def check_memory_usage(self) -> dict:
+        """Vérifie l'utilisation mémoire et retourne les statistiques."""
+        try:
+            memory = psutil.virtual_memory()
+            return {
+                'total_mb': memory.total // (1024 * 1024),
+                'available_mb': memory.available // (1024 * 1024),
+                'used_mb': memory.used // (1024 * 1024),
+                'percent': memory.percent,
+                'is_safe': memory.percent < 85
+            }
+        except Exception as e:
+            self.logger.warning(f"Impossible de vérifier la mémoire: {e}")
+            return {'is_safe': True}  # Par défaut, considérer comme sûr
+    
+    def estimate_processing_time(self, num_urls: int) -> dict:
+        """Estime le temps de traitement basé sur le nombre d'URLs."""
+        # Estimations basées sur les tests (en secondes)
+        extraction_time_per_url = 2.0  # Extraction + parsing
+        embedding_time_per_url = 1.5   # Appel API OpenAI
+        similarity_time = 0.1 * num_urls  # Calcul matriciel
+        
+        total_seconds = (extraction_time_per_url + embedding_time_per_url) * num_urls + similarity_time
+        
+        # Ajuster pour la parallélisation
+        if num_urls <= 50:
+            parallel_factor = 0.6  # 40% de gain
+        elif num_urls <= 200:
+            parallel_factor = 0.5  # 50% de gain
+        else:
+            parallel_factor = 0.4  # 60% de gain
+        
+        estimated_seconds = total_seconds * parallel_factor
+        
+        return {
+            'seconds': estimated_seconds,
+            'minutes': estimated_seconds / 60,
+            'hours': estimated_seconds / 3600,
+            'formatted': self._format_time(estimated_seconds)
+        }
+    
+    def _format_time(self, seconds: float) -> str:
+        """Formate le temps en format lisible."""
+        if seconds < 60:
+            return f"{seconds:.1f} secondes"
+        elif seconds < 3600:
+            return f"{seconds/60:.1f} minutes"
+        else:
+            return f"{seconds/3600:.1f} heures"
 
 def main():
     parser = argparse.ArgumentParser(description='Optimiseur de maillage interne SEO')

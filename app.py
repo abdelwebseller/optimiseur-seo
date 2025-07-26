@@ -177,7 +177,9 @@ class WebSEOOptimizer:
         
         return errors
     
-    def run_analysis(self, sitemap_url, min_similarity, max_links, embedding_model, use_reduced_dimensions, embedding_dimensions):
+    def run_analysis(self, sitemap_url, min_similarity, max_links, embedding_model, use_reduced_dimensions, 
+                    embedding_dimensions, max_concurrent_requests, max_concurrent_embeddings, 
+                    batch_size, processing_mode):
         """Lance l'analyse en arrière-plan."""
         try:
             # Réinitialiser la progression
@@ -188,10 +190,23 @@ class WebSEOOptimizer:
             self.log_message("🚀 Démarrage de l'analyse...")
             self.update_progress(0, 100, "Initialisation...")
             
-            # Initialiser l'optimiseur
+            # Configurer les paramètres selon le mode
+            if processing_mode == "Rapide":
+                max_concurrent_requests = min(20, max_concurrent_requests + 5)
+                max_concurrent_embeddings = min(10, max_concurrent_embeddings + 2)
+                batch_size = min(100, batch_size + 25)
+            elif processing_mode == "Prudent":
+                max_concurrent_requests = max(5, max_concurrent_requests - 5)
+                max_concurrent_embeddings = max(3, max_concurrent_embeddings - 2)
+                batch_size = max(25, batch_size - 25)
+            
+            # Initialiser l'optimiseur avec les paramètres de parallélisation
             self.optimizer = InternalLinkingOptimizer(
                 api_key=st.session_state.api_key,
-                model=embedding_model
+                model=embedding_model,
+                max_concurrent_requests=max_concurrent_requests,
+                max_concurrent_embeddings=max_concurrent_embeddings,
+                batch_size=batch_size
             )
             
             # Extraire les URLs du sitemap
@@ -209,10 +224,28 @@ class WebSEOOptimizer:
                 self.log_message("❌ Aucune URL trouvée dans le sitemap", "ERROR")
                 return False
             
-            # Limiter le nombre d'URLs pour éviter les timeouts
-            if len(urls) > 100:
-                self.log_message(f"⚠️ Limitation à 100 URLs (sur {len(urls)} trouvées) pour éviter les timeouts", "WARNING")
-                urls = urls[:100]
+            # Afficher les informations de performance
+            time_estimate = self.optimizer.estimate_processing_time(len(urls))
+            memory_info = self.optimizer.check_memory_usage()
+            
+            # Stocker les informations de performance
+            st.session_state.performance_info = {
+                'estimated_time': time_estimate['formatted'],
+                'memory_available': memory_info.get('available_mb', 'N/A'),
+                'concurrent_requests': max_concurrent_requests,
+                'concurrent_embeddings': max_concurrent_embeddings,
+                'batch_size': batch_size,
+                'processing_mode': processing_mode
+            }
+            
+            self.log_message(f"⏱️ Temps estimé: {time_estimate['formatted']}")
+            self.log_message(f"💾 Mémoire disponible: {memory_info.get('available_mb', 'N/A')} MB")
+            
+            # Avertissement pour les gros volumes
+            if len(urls) > 500:
+                self.log_message(f"⚠️ Gros volume détecté ({len(urls)} URLs). Le traitement peut prendre du temps.", "WARNING")
+            elif len(urls) > 1000:
+                self.log_message(f"⚠️ Très gros volume ({len(urls)} URLs). Considérez traiter par sections.", "WARNING")
             
             # Stocker le nombre total d'URLs
             st.session_state.total_urls = len(urls)
@@ -223,7 +256,7 @@ class WebSEOOptimizer:
             self.update_progress(10, 100, f"Traitement des pages (0/{len(urls)})")
             
             try:
-                # Modifier le process_urls pour inclure la progression
+                # Utiliser la nouvelle méthode optimisée
                 df = self.optimizer.process_urls_with_progress(urls, dimensions=dimensions, progress_callback=self.update_progress)
                 
                 if df.empty:
@@ -350,27 +383,68 @@ def main():
         )
         
         # Configuration avancée
-        with st.expander("🔧 Configuration avancée"):
-            embedding_model = st.selectbox(
-                "Modèle d'embeddings",
-                ["text-embedding-3-small", "text-embedding-3-large", "text-embedding-ada-002"],
-                help="Modèle OpenAI pour les embeddings"
-            )
+        with st.expander("⚙️ Configuration avancée"):
+            col1, col2 = st.columns(2)
             
-            use_reduced_dimensions = st.checkbox(
-                "Réduire les dimensions",
-                help="Utiliser des dimensions réduites pour économiser les tokens"
-            )
-            
-            if use_reduced_dimensions:
-                embedding_dimensions = st.selectbox(
-                    "Dimensions",
-                    [256, 512, 768, 1024, 1536],
-                    index=1,  # 512 par défaut
-                    help="Nombre de dimensions pour les embeddings"
+            with col1:
+                embedding_model = st.selectbox(
+                    "Modèle d'embedding",
+                    ["text-embedding-3-small", "text-embedding-3-large", "text-embedding-ada-002"],
+                    index=0,
+                    help="Modèle OpenAI pour générer les embeddings"
                 )
-            else:
-                embedding_dimensions = None
+                
+                use_reduced_dimensions = st.checkbox(
+                    "Utiliser des dimensions réduites",
+                    value=False,
+                    help="Réduire la taille des embeddings pour économiser les tokens"
+                )
+                
+                if use_reduced_dimensions:
+                    embedding_dimensions = st.slider(
+                        "Dimensions d'embedding",
+                        min_value=256,
+                        max_value=1536,
+                        value=512,
+                        step=256,
+                        help="Nombre de dimensions pour les embeddings (plus = plus précis mais plus cher)"
+                    )
+                else:
+                    embedding_dimensions = None
+                
+            with col2:
+                # Nouveaux paramètres de parallélisation
+                max_concurrent_requests = st.slider(
+                    "Requêtes HTTP simultanées",
+                    min_value=5,
+                    max_value=20,
+                    value=10,
+                    help="Nombre de requêtes HTTP simultanées (plus = plus rapide mais risque de surcharge)"
+                )
+                
+                max_concurrent_embeddings = st.slider(
+                    "Embeddings simultanés",
+                    min_value=3,
+                    max_value=10,
+                    value=5,
+                    help="Nombre d'embeddings OpenAI simultanés (attention aux rate limits)"
+                )
+                
+                batch_size = st.slider(
+                    "Taille des batches",
+                    min_value=25,
+                    max_value=100,
+                    value=50,
+                    help="Nombre d'URLs traitées par batch (plus = plus efficace mais plus de mémoire)"
+                )
+                
+                # Mode de traitement
+                processing_mode = st.selectbox(
+                    "Mode de traitement",
+                    ["Auto", "Rapide", "Standard", "Prudent"],
+                    index=0,
+                    help="Auto: détection automatique, Rapide: parallélisation maximale, Standard: équilibré, Prudent: séquentiel"
+                )
     
     # Contenu principal selon la page sélectionnée
     if selected_page == "🏠 Accueil":
@@ -426,16 +500,19 @@ def main():
                 app.analysis_running = True
                 st.session_state.analysis_complete = False
                 
-                # Lancer l'analyse en arrière-plan
-                with st.spinner("Analyse en cours..."):
-                    success = app.run_analysis(
-                        sitemap_url=sitemap_url,
-                        min_similarity=min_similarity,
-                        max_links=max_links,
-                        embedding_model=embedding_model,
-                        use_reduced_dimensions=use_reduced_dimensions,
-                        embedding_dimensions=embedding_dimensions
-                    )
+                # Lancer l'analyse
+                success = app.run_analysis(
+                    sitemap_url=sitemap_url,
+                    min_similarity=min_similarity,
+                    max_links=max_links,
+                    embedding_model=embedding_model,
+                    use_reduced_dimensions=use_reduced_dimensions,
+                    embedding_dimensions=embedding_dimensions,
+                    max_concurrent_requests=max_concurrent_requests,
+                    max_concurrent_embeddings=max_concurrent_embeddings,
+                    batch_size=batch_size,
+                    processing_mode=processing_mode
+                )
                 
                 app.analysis_running = False
                 
@@ -449,6 +526,56 @@ def main():
             # Affichage des résultats
             if st.session_state.analysis_complete and st.session_state.results:
                 st.subheader("📊 Résultats de l'analyse")
+                
+                # Métriques de performance
+                if st.session_state.get('analysis_complete', False):
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    with col1:
+                        st.metric(
+                            label="Pages analysées",
+                            value=len(st.session_state.results) if st.session_state.results else 0,
+                            help="Nombre total de pages traitées avec succès"
+                        )
+                    
+                    with col2:
+                        total_links = sum(len(data['recommended_links']) for data in st.session_state.results.values()) if st.session_state.results else 0
+                        st.metric(
+                            label="Liens recommandés",
+                            value=total_links,
+                            help="Nombre total de liens internes recommandés"
+                        )
+                    
+                    with col3:
+                        avg_links = total_links / len(st.session_state.results) if st.session_state.results else 0
+                        st.metric(
+                            label="Liens/page",
+                            value=f"{avg_links:.1f}",
+                            help="Nombre moyen de liens recommandés par page"
+                        )
+                    
+                    with col4:
+                        # Afficher le mode de traitement utilisé
+                        mode_used = st.session_state.get('processing_mode', 'Standard')
+                        st.metric(
+                            label="Mode utilisé",
+                            value=mode_used,
+                            help="Mode de traitement utilisé pour l'analyse"
+                        )
+                    
+                    # Informations supplémentaires sur les performances
+                    if st.session_state.get('performance_info'):
+                        with st.expander("📊 Informations de performance"):
+                            perf_info = st.session_state.performance_info
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                st.write(f"**Temps estimé initial:** {perf_info.get('estimated_time', 'N/A')}")
+                                st.write(f"**Mémoire disponible:** {perf_info.get('memory_available', 'N/A')} MB")
+                            
+                            with col2:
+                                st.write(f"**Requêtes simultanées:** {perf_info.get('concurrent_requests', 'N/A')}")
+                                st.write(f"**Embeddings simultanés:** {perf_info.get('concurrent_embeddings', 'N/A')}")
                 
                 # Statistiques
                 total_pages = len(st.session_state.results)
