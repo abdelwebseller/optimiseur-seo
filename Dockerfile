@@ -7,8 +7,8 @@ WORKDIR /app
 # Copier les fichiers de dépendances
 COPY frontend-nextjs/package*.json ./
 
-# Installer les dépendances
-RUN npm ci --only=production
+# Installer toutes les dépendances (incluant devDependencies pour TypeScript)
+RUN npm ci
 
 # Copier le code source
 COPY frontend-nextjs/ .
