@@ -1,0 +1,1 @@
+# Package core pour la configuration et la base de données 

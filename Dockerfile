@@ -27,5 +27,5 @@ EXPOSE 3000
 ENV PORT 3000
 ENV HOSTNAME "0.0.0.0"
 
-# Script de démarrage avec debug complet
-CMD ["sh", "-c", "echo '=== DEBUG INFO ===' && echo 'Current directory: $(pwd)' && echo 'Files in directory: $(ls -la)' && echo 'Starting Next.js on port $PORT' && echo 'Hostname: $HOSTNAME' && echo 'Node ENV: $NODE_ENV' && echo '=== STARTING APP ===' && npm start"] 
+# Script de démarrage avec debug complet et vérification
+CMD ["sh", "-c", "echo '=== DEBUG INFO ===' && echo 'Current directory: $(pwd)' && echo 'Files in directory: $(ls -la)' && echo 'Starting Next.js on port $PORT' && echo 'Hostname: $HOSTNAME' && echo 'Node ENV: $NODE_ENV' && echo '=== STARTING APP ===' && echo 'Running: npm start' && npm start 2>&1"] 
